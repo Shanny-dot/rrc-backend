@@ -7,7 +7,10 @@ app = FastAPI(title="RRC App API", description="API for Referral and Rewards Pla
 # CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict to frontend URL
+    allow_origins=[
+        "http://localhost:5173",
+        "https://rrc-admin.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
