@@ -1,0 +1,27 @@
+INFO:     Will watch for changes in these directories: ['/Users/shannytanu/Documents/Side Gigs/RRC Referal Project/rrc-backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [31015] using StatReload
+INFO:     Started server process [31018]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53696 - "GET /api/v1/rewards/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53704 - "OPTIONS /api/v1/rewards HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53705 - "OPTIONS /api/v1/admin/redemptions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53706 - "OPTIONS /api/v1/admin/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53707 - "OPTIONS /api/v1/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53704 - "GET /api/v1/rewards HTTP/1.1" 307 Temporary Redirect
+INFO:     127.0.0.1:53707 - "GET /api/v1/events HTTP/1.1" 307 Temporary Redirect
+INFO:     127.0.0.1:53708 - "OPTIONS /api/v1/rewards/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53710 - "OPTIONS /api/v1/events/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53708 - "GET /api/v1/rewards/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53710 - "GET /api/v1/events/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53706 - "GET /api/v1/admin/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53705 - "GET /api/v1/admin/redemptions HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'app/api/routes/admin.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [31018]
+INFO:     Started server process [33378]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
