@@ -171,9 +171,21 @@ class VerifyMobileRequest(BaseModel):
 @router.post("/verify-mobile")
 def verify_mobile(req: VerifyMobileRequest):
     try:
+        # Normalise phone to E.164 (must match what was used when OTP was sent)
+        formatted_mobile = req.mobile.strip()
+        if not formatted_mobile.startswith('+'):
+            if len(formatted_mobile) == 10 and not formatted_mobile.startswith('0'):
+                formatted_mobile = f"+91{formatted_mobile}"
+            elif len(formatted_mobile) == 9:
+                formatted_mobile = f"+61{formatted_mobile}"
+            elif len(formatted_mobile) == 10 and formatted_mobile.startswith('0'):
+                formatted_mobile = f"+61{formatted_mobile[1:]}"
+            else:
+                formatted_mobile = f"+{formatted_mobile}"
+
         # Normal Flow: Verify the Twilio SMS via Supabase
         verify_response = supabase_anon.auth.verify_otp({
-            "phone": req.mobile,
+            "phone": formatted_mobile,
             "token": req.code,
             "type": "sms"
         })
