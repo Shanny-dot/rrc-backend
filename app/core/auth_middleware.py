@@ -8,30 +8,20 @@ from app.core.supabase_client import supabase_admin, supabase_anon
 security = HTTPBearer()
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    # Always verify via Supabase Auth (handles both HS256 and ES256 tokens correctly)
     try:
-        # Try local offline verification first using the configured secret or bypass secret
-        jwt_secret = os.environ.get("SUPABASE_JWT_SECRET", settings.JWT_SECRET)
-        payload = jwt.decode(
-            credentials.credentials,
-            jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False}
-        )
-        return payload
-    except Exception as base_err:
-        try:
-            # Fallback: Remote verification if the local .env JWT_SECRET is incorrect
-            user_response = supabase_anon.auth.get_user(credentials.credentials)
-            if user_response and user_response.user:
-                return {"sub": user_response.user.id, "email": user_response.user.email}
-        except Exception as e:
-            print(f"Auth Fallback Error: {e} | Base Error: {base_err}")
-            
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {base_err}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        user_response = supabase_anon.auth.get_user(token)
+        if user_response and user_response.user:
+            return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated"}
+    except Exception as e:
+        pass
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 def get_current_admin(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")

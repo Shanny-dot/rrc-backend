@@ -171,47 +171,6 @@ class VerifyMobileRequest(BaseModel):
 @router.post("/verify-mobile")
 def verify_mobile(req: VerifyMobileRequest):
     try:
-        # Developer Bypass for Testing (Twilio trial accounts often fail SMS delivery)
-        if req.code == "123456":
-            # Find the user manually since we aren't using the real Supabase OTP flow
-            user_resp = supabase_admin.table("users").select("*").eq("mobile", req.mobile).execute()
-            if not user_resp.data:
-                 # Check the formatted variations if direct match fails
-                 formatted_mobile = req.mobile.strip()
-                 if not formatted_mobile.startswith('+'):
-                     if len(formatted_mobile) == 10:
-                         formatted_mobile = f"+91{formatted_mobile}"
-                     elif len(formatted_mobile) == 9:
-                         formatted_mobile = f"+61{formatted_mobile}"
-                     elif len(formatted_mobile) == 10 and formatted_mobile.startswith('0'):
-                         formatted_mobile = f"+61{formatted_mobile[1:]}"
-                     else:
-                         formatted_mobile = f"+{formatted_mobile}"
-                 user_resp = supabase_admin.table("users").select("*").eq("mobile", formatted_mobile).execute()
-                 
-            if not user_resp.data:
-                raise HTTPException(status_code=404, detail="User not found")
-                
-            user_record = user_resp.data[0]
-            
-            # Manually generate a JWT for the bypassed session
-            import jwt
-            from datetime import timedelta, datetime
-            
-            # Use supabase jwt secret
-            import os
-            jwt_secret = os.environ.get("SUPABASE_JWT_SECRET", "super-secret-jwt-token-with-at-least-32-characters-long")
-            
-            payload = {
-                "sub": user_record["id"],
-                "role": "authenticated",
-                "email": user_record["email"],
-                "exp": datetime.utcnow() + timedelta(days=7)
-            }
-            token = jwt.encode(payload, jwt_secret, algorithm="HS256")
-            
-            return TokenResponse(access_token=token)
-
         # Normal Flow: Verify the Twilio SMS via Supabase
         verify_response = supabase_anon.auth.verify_otp({
             "phone": req.mobile,
@@ -240,7 +199,6 @@ def login(creds: LoginCredentials):
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid login credentials")
 
-@router.get("/me")
 @router.get("/me")
 def get_me(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
