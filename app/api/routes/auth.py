@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from typing import Optional
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.core.supabase_client import supabase_anon, supabase_admin
 from app.core.auth_middleware import get_current_user
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
@@ -10,6 +12,7 @@ import random
 import string
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 class RegisterCredentials(BaseModel):
     full_name: str
@@ -30,7 +33,8 @@ def generate_referral_code(length=8):
     return ''.join(random.choice(characters) for i in range(length))
 
 @router.post("/register", response_model=TokenResponse)
-def register(creds: RegisterCredentials):
+@limiter.limit("5/minute")
+def register(request: Request, creds: RegisterCredentials):
     try:
         if not creds.mobile:
              raise HTTPException(status_code=400, detail="Mobile number is required for SMS auth")
@@ -143,7 +147,8 @@ class ResendOTPRequest(BaseModel):
     mobile: str
 
 @router.post("/resend-otp")
-def resend_otp(req: ResendOTPRequest):
+@limiter.limit("5/minute")
+def resend_otp(request: Request, req: ResendOTPRequest):
     try:
         formatted_mobile = req.mobile.strip()
         if not formatted_mobile.startswith('+'):
@@ -169,7 +174,8 @@ class VerifyMobileRequest(BaseModel):
     code: str
 
 @router.post("/verify-mobile")
-def verify_mobile(req: VerifyMobileRequest):
+@limiter.limit("10/minute")
+def verify_mobile(request: Request, req: VerifyMobileRequest):
     try:
         # Normalise phone to E.164 (must match what was used when OTP was sent)
         formatted_mobile = req.mobile.strip()
@@ -199,7 +205,8 @@ def verify_mobile(req: VerifyMobileRequest):
          raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/login", response_model=TokenResponse)
-def login(creds: LoginCredentials):
+@limiter.limit("5/minute")
+def login(request: Request, creds: LoginCredentials):
     try:
         auth_response = supabase_anon.auth.sign_in_with_password({
             "email": creds.email,

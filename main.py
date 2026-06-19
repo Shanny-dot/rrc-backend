@@ -1,14 +1,25 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from app.api.routes import auth, events, rewards, referrals, transactions, admin
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="RRC App API", description="API for Referral and Rewards Platform")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
         "https://rrc-admin.vercel.app",
     ],
     allow_credentials=True,
