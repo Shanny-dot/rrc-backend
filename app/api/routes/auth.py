@@ -247,3 +247,15 @@ def update_fcm_token(req: FCMTokenRequest, current_user: dict = Depends(get_curr
     user_id = current_user.get("sub")
     resp = supabase_admin.table("users").update({"fcm_token": req.fcm_token}).eq("id", user_id).execute()
     return {"message": "FCM token updated successfully"}
+
+@router.delete("/account")
+def delete_account(current_user: dict = Depends(get_current_user)):
+    user_id = current_user.get("sub")
+    try:
+        # Delete from public.users (triggers DB cascade deletes)
+        supabase_admin.table("users").delete().eq("id", user_id).execute()
+        # Delete from auth.users (Supabase Auth)
+        supabase_admin.auth.admin.delete_user(user_id)
+        return {"success": True, "message": "Account deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to delete account: {str(e)}")
