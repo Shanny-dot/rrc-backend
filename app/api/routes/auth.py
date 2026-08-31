@@ -117,24 +117,26 @@ def register(request: Request, creds: RegisterCredentials):
             else:
                 formatted_mobile = f"+{formatted_mobile}"
 
-        # 5. Trigger Twilio SMS via Supabase OTP Sign In
-        # Even though they just signed up, calling OTP sign-in issues the SMS for verification
-        supabase_anon.auth.sign_in_with_otp({
-             "phone": formatted_mobile
-        })
+        # 5. Trigger Twilio SMS via Supabase OTP Sign In (if enabled)
+        try:
+            supabase_anon.auth.sign_in_with_otp({
+                 "phone": formatted_mobile
+            })
+        except Exception as otp_err:
+            print(f"SMS OTP trigger skipped/error: {otp_err}")
         
         # 6. Award 100 pt Signup Bonus
-        PointsService.award_points(
-            user_id=user.id,
-            points=100,
-            type="signup_bonus",
-            description="Welcome Bonus"
-        )
-        supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user.id).execute()
+        try:
+            PointsService.award_points(
+                user_id=user.id,
+                points=100,
+                type="signup_bonus",
+                description="Welcome Bonus"
+            )
+            supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user.id).execute()
+        except Exception as pts_err:
+            print(f"Points award warning: {pts_err}")
         
-        # Note: Email welcome disabled as per user instruction. 
-        # For the admin creation path, we don't have a session inherently returned, 
-        # but the OTP sign_in_with_otp above will issue the session upon verification!
         return TokenResponse(access_token="pending_verification")
 
     except HTTPException as e:
