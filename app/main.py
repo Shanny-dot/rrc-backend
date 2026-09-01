@@ -17,7 +17,7 @@ app.include_router(referrals.router, prefix="/api/v1/referrals", tags=["Referral
 app.include_router(events.router, prefix="/api/v1/events", tags=["Events"])
 app.include_router(rewards.router, prefix="/api/v1/rewards", tags=["Rewards"])
 app.include_router(transactions.router, prefix="/api/v1/transactions", tags=["Transactions"])
-app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 
 @app.get("/health")
 def health_check():
