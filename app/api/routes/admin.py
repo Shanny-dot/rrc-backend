@@ -17,7 +17,15 @@ router = APIRouter(dependencies=[Depends(get_current_admin)])
 
 @router.get("/users")
 def list_users():
-    resp = supabase_admin.table("users").select("*").execute()
+    # Returns active users (where deleted_at is null or not set)
+    resp = supabase_admin.table("users").select("*").is_("deleted_at", "null").order("created_at", desc=True).execute()
+    return resp.data
+
+@router.get("/deleted-users")
+def list_deleted_users():
+    # Returns users soft-deleted within the last 30 days
+    thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+    resp = supabase_admin.table("users").select("*").not_.is_("deleted_at", "null").gte("deleted_at", thirty_days_ago).order("deleted_at", desc=True).execute()
     return resp.data
 
 @router.get("/users/{id}")
@@ -27,16 +35,45 @@ def get_user(id: str):
          raise HTTPException(status_code=404, detail="User not found")
     return resp.data
 
+@router.delete("/users/{id}")
+def delete_user(id: str):
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User deleted successfully", "data": resp.data[0]}
+
+@router.post("/users/{id}/restore")
+def restore_user(id: str):
+    resp = supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User restored successfully", "data": resp.data[0]}
+
 @router.put("/users/{id}/points")
-def update_user_points(id: str, points: int = Body(..., embed=True), reason: str = Body(..., embed=True)):
-    if points > 0:
-         PointsService.award_points(user_id=id, points=points, type="admin_adjustment", description=reason)
-    elif points < 0:
-         # To deduct points, we pass the absolute amount to deduct_points which handles balance check
-         # Wait, if admin forces it, it might drop below 0? deduct_points checks logic. For admin, maybe force?
-         # Using deduct_points to ensure safety:
-         PointsService.deduct_points(user_id=id, points=abs(points), type="admin_adjustment", description=reason)
-    return {"message": "Points updated successfully"}
+def update_user_points(id: str, new_points: int = Body(..., embed=True), reason: str = Body("Admin adjustment", embed=True)):
+    user_resp = supabase_admin.table("users").select("total_points").eq("id", id).execute()
+    if not user_resp.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    current_points = user_resp.data[0].get("total_points", 0) or 0
+    diff = new_points - current_points
+    
+    resp = supabase_admin.table("users").update({"total_points": new_points}).eq("id", id).execute()
+    
+    if diff != 0:
+        tx_type = "admin_award" if diff > 0 else "admin_deduct"
+        try:
+            supabase_admin.table("point_transactions").insert({
+                "user_id": id,
+                "points": abs(diff),
+                "type": tx_type,
+                "description": f"{reason} (Updated from {current_points} to {new_points} pts)"
+            }).execute()
+        except Exception as e:
+            print("Transaction log warning:", e)
+            
+    return {"message": f"Points updated to {new_points}", "data": resp.data[0]}
 
 @router.get("/events")
 def list_all_events():
