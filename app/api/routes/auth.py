@@ -237,9 +237,8 @@ def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current
     update_data = {k: v for k, v in profile.dict(exclude_unset=True).items()}
     
     if update_data:
-         # simple logic to check profile complete
-         # if all essential fields are there, set profile_complete = true
-         # (omitted for brevity, assume simple update)
+         # Automatically mark profile as completed when profile details are saved
+         update_data["profile_complete"] = True
          resp = supabase_admin.table("users").update(update_data).eq("id", user_id).execute()
          return resp.data[0] if resp.data else {}
     return {"message": "No data provided"}
