@@ -17,16 +17,21 @@ router = APIRouter(dependencies=[Depends(get_current_admin)])
 
 @router.get("/users")
 def list_users():
-    # Returns active users (where deleted_at is null or not set)
-    resp = supabase_admin.table("users").select("*").is_("deleted_at", "null").order("created_at", desc=True).execute()
-    return resp.data
+    # Returns active users safely (where deleted_at is None or not present)
+    resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
+    active_users = [u for u in (resp.data or []) if not u.get("deleted_at")]
+    return active_users
 
 @router.get("/deleted-users")
 def list_deleted_users():
     # Returns users soft-deleted within the last 30 days
     thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
-    resp = supabase_admin.table("users").select("*").not_.is_("deleted_at", "null").gte("deleted_at", thirty_days_ago).order("deleted_at", desc=True).execute()
-    return resp.data
+    resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
+    deleted_users = [
+        u for u in (resp.data or [])
+        if u.get("deleted_at") and str(u.get("deleted_at")) >= thirty_days_ago
+    ]
+    return deleted_users
 
 @router.get("/users/{id}")
 def get_user(id: str):
