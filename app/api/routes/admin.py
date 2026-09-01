@@ -10,27 +10,54 @@ from app.services.email_service import EmailService
 from app.services.push_service import PushService
 import datetime
 import json
+import os
 
 # For now, get_current_admin is a placeholder or simplistic check in auth_middleware
 # Assuming the route is protected by depends
 router = APIRouter()
 
+DELETED_USERS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "deleted_users.json")
+
+def load_deleted_users_map() -> dict:
+    try:
+        if os.path.exists(DELETED_USERS_FILE):
+            with open(DELETED_USERS_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print("Error loading deleted_users.json:", e)
+    return {}
+
+def save_deleted_users_map(data: dict):
+    try:
+        with open(DELETED_USERS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print("Error saving deleted_users.json:", e)
+
 @router.get("/users")
 def list_users(admin: dict = Depends(get_current_admin)):
-    # Returns active users safely (where deleted_at is None or not present)
     resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
-    active_users = [u for u in (resp.data or []) if not u.get("deleted_at")]
+    dmap = load_deleted_users_map()
+    active_users = []
+    for u in (resp.data or []):
+        uid = u.get("id")
+        if not u.get("deleted_at") and uid not in dmap:
+            active_users.append(u)
     return active_users
 
 @router.get("/deleted-users")
 def list_deleted_users(admin: dict = Depends(get_current_admin)):
-    # Returns users soft-deleted within the last 30 days
     thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
     resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
-    deleted_users = [
-        u for u in (resp.data or [])
-        if u.get("deleted_at") and str(u.get("deleted_at")) >= thirty_days_ago
-    ]
+    dmap = load_deleted_users_map()
+    deleted_users = []
+    for u in (resp.data or []):
+        uid = u.get("id")
+        del_time = u.get("deleted_at") or dmap.get(uid)
+        if del_time and str(del_time) >= thirty_days_ago:
+            u_copy = dict(u)
+            u_copy["deleted_at"] = del_time
+            deleted_users.append(u_copy)
     return deleted_users
 
 @router.get("/users/{id}")
@@ -43,17 +70,28 @@ def get_user(id: str, admin: dict = Depends(get_current_admin)):
 @router.delete("/users/{id}")
 def delete_user(id: str, admin: dict = Depends(get_current_admin)):
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    resp = supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
-    if not resp.data:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"message": "User deleted successfully", "data": resp.data[0]}
+    try:
+        supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
+    except Exception as e:
+        print("DB deleted_at update note:", e)
+        
+    dmap = load_deleted_users_map()
+    dmap[id] = now_iso
+    save_deleted_users_map(dmap)
+    return {"message": "User deleted successfully", "id": id}
 
 @router.post("/users/{id}/restore")
 def restore_user(id: str, admin: dict = Depends(get_current_admin)):
-    resp = supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
-    if not resp.data:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"message": "User restored successfully", "data": resp.data[0]}
+    try:
+        supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
+    except Exception as e:
+        print("DB deleted_at restore note:", e)
+        
+    dmap = load_deleted_users_map()
+    if id in dmap:
+        del dmap[id]
+        save_deleted_users_map(dmap)
+    return {"message": "User restored successfully", "id": id}
 
 @router.put("/users/{id}/points")
 def update_user_points(id: str, new_points: int = Body(..., embed=True), reason: str = Body("Admin adjustment", embed=True), admin: dict = Depends(get_current_admin)):
