@@ -13,17 +13,17 @@ import json
 
 # For now, get_current_admin is a placeholder or simplistic check in auth_middleware
 # Assuming the route is protected by depends
-router = APIRouter(dependencies=[Depends(get_current_admin)])
+router = APIRouter()
 
 @router.get("/users")
-def list_users():
+def list_users(admin: dict = Depends(get_current_admin)):
     # Returns active users safely (where deleted_at is None or not present)
     resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
     active_users = [u for u in (resp.data or []) if not u.get("deleted_at")]
     return active_users
 
 @router.get("/deleted-users")
-def list_deleted_users():
+def list_deleted_users(admin: dict = Depends(get_current_admin)):
     # Returns users soft-deleted within the last 30 days
     thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
     resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
@@ -34,14 +34,14 @@ def list_deleted_users():
     return deleted_users
 
 @router.get("/users/{id}")
-def get_user(id: str):
+def get_user(id: str, admin: dict = Depends(get_current_admin)):
     resp = supabase_admin.table("users").select("*").eq("id", id).single().execute()
     if not resp.data:
          raise HTTPException(status_code=404, detail="User not found")
     return resp.data
 
 @router.delete("/users/{id}")
-def delete_user(id: str):
+def delete_user(id: str, admin: dict = Depends(get_current_admin)):
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     resp = supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
     if not resp.data:
@@ -49,14 +49,14 @@ def delete_user(id: str):
     return {"message": "User deleted successfully", "data": resp.data[0]}
 
 @router.post("/users/{id}/restore")
-def restore_user(id: str):
+def restore_user(id: str, admin: dict = Depends(get_current_admin)):
     resp = supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "User restored successfully", "data": resp.data[0]}
 
 @router.put("/users/{id}/points")
-def update_user_points(id: str, new_points: int = Body(..., embed=True), reason: str = Body("Admin adjustment", embed=True)):
+def update_user_points(id: str, new_points: int = Body(..., embed=True), reason: str = Body("Admin adjustment", embed=True), admin: dict = Depends(get_current_admin)):
     user_resp = supabase_admin.table("users").select("total_points").eq("id", id).execute()
     if not user_resp.data:
         raise HTTPException(status_code=404, detail="User not found")
