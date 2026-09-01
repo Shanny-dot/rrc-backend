@@ -5,6 +5,7 @@ import uuid
 
 class EventBase(BaseModel):
     title: str
+    category: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
     event_date: datetime
@@ -19,6 +20,7 @@ class EventCreate(EventBase):
 
 class EventUpdate(BaseModel):
     title: Optional[str] = None
+    category: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
     event_date: Optional[datetime] = None
