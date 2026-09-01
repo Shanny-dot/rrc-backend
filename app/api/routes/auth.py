@@ -25,6 +25,9 @@ class LoginCredentials(BaseModel):
     email: str
     password: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
 class FCMTokenRequest(BaseModel):
     fcm_token: str
 
@@ -219,6 +222,19 @@ def login(request: Request, creds: LoginCredentials):
         return TokenResponse(access_token=auth_response.session.access_token)
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid login credentials")
+
+@router.post("/forgot-password")
+def forgot_password(req: ForgotPasswordRequest):
+    email = req.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email address is required")
+        
+    try:
+        supabase_anon.auth.reset_password_for_email(email)
+        return {"success": True, "message": "Password reset instructions sent to your email address."}
+    except Exception as e:
+        print("Forgot password error:", e)
+        return {"success": True, "message": "If an account exists with this email, password reset instructions have been sent."}
 
 @router.get("/me")
 def get_me(current_user: dict = Depends(get_current_user)):
