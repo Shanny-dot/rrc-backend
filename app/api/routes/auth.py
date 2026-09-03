@@ -28,12 +28,59 @@ class LoginCredentials(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: str
 
+class SocialLoginRequest(BaseModel):
+    provider: str
+    id_token: Optional[str] = None
+    access_token: Optional[str] = None
+    raw_nonce: Optional[str] = None
+
 class FCMTokenRequest(BaseModel):
     fcm_token: str
 
 def generate_referral_code(length=8):
     characters = string.ascii_uppercase + string.digits
     return ''.join(random.choice(characters) for i in range(length))
+
+@router.post("/social-login", response_model=TokenResponse)
+def social_login(creds: SocialLoginRequest):
+    try:
+        auth_response = supabase_anon.auth.sign_in_with_id_token({
+            "provider": creds.provider,
+            "id_token": creds.id_token,
+            "access_token": creds.access_token,
+            "nonce": creds.raw_nonce
+        })
+        
+        session = auth_response.session
+        user = auth_response.user
+        
+        if not session or not user:
+            raise HTTPException(status_code=400, detail="Social authentication failed")
+
+        user_db = supabase_admin.table("users").select("*").eq("id", user.id).execute()
+        if not user_db.data:
+            ref_code = generate_referral_code()
+            full_name = "User"
+            if user.user_metadata and "full_name" in user.user_metadata:
+                full_name = user.user_metadata["full_name"]
+            elif user.email:
+                full_name = user.email.split("@")[0]
+
+            supabase_admin.table("users").insert({
+                "id": user.id,
+                "email": user.email,
+                "full_name": full_name,
+                "referral_code": ref_code,
+                "profile_complete": False
+            }).execute()
+
+        return {
+            "access_token": session.access_token,
+            "refresh_token": session.refresh_token,
+            "token_type": "bearer"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/register", response_model=TokenResponse)
 @limiter.limit("5/minute")
