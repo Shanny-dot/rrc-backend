@@ -9,12 +9,20 @@ security = HTTPBearer()
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    # Always verify via Supabase Auth (handles both HS256 and ES256 tokens correctly)
+    # 1. Always verify via Supabase Auth (handles both HS256 and ES256 tokens correctly)
     try:
         user_response = supabase_anon.auth.get_user(token)
         if user_response and user_response.user:
             return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated"}
     except Exception as e:
+        pass
+
+    # 2. Fallback verification for direct verified tokens (Apple Sign-In / Demo login)
+    try:
+        payload = jwt.decode(token, "rrc_secret_jwt_key_2026", algorithms=["HS256"])
+        if payload and "sub" in payload:
+            return {"sub": payload["sub"], "email": payload.get("email"), "role": "authenticated"}
+    except Exception:
         pass
 
     raise HTTPException(
