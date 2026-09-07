@@ -93,6 +93,23 @@ def restore_user(id: str, admin: dict = Depends(get_current_admin)):
         save_deleted_users_map(dmap)
     return {"message": "User restored successfully", "id": id}
 
+@router.put("/users/{id}")
+def update_user_profile(id: str, data: dict = Body(...), admin: dict = Depends(get_current_admin)):
+    """Update user profile fields from admin panel."""
+    ALLOWED_FIELDS = {
+        "full_name", "mobile", "gender", "dob", "industry",
+        "home_ownership_status", "annual_income", "street_address",
+        "city", "state", "postal_code", "role"
+    }
+    update_data = {k: v for k, v in data.items() if k in ALLOWED_FIELDS}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    resp = supabase_admin.table("users").update(update_data).eq("id", id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    return resp.data[0]
+
+
 @router.put("/users/{id}/points")
 def update_user_points(id: str, new_points: int = Body(..., embed=True), reason: str = Body("Admin adjustment", embed=True), admin: dict = Depends(get_current_admin)):
     user_resp = supabase_admin.table("users").select("total_points").eq("id", id).execute()
