@@ -311,7 +311,7 @@ def scan_qr(req: QRScanRequest):
 
 @router.get("/transactions")
 def admin_list_transactions(user_id: str = None):
-    query = supabase_admin.table("transactions").select("*")
+    query = supabase_admin.table("transactions").select("*, users(id, full_name, email)")
     if user_id:
          query = query.eq("user_id", user_id)
     resp = query.order("created_at", desc=True).execute()
