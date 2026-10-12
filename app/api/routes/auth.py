@@ -6,6 +6,9 @@ from slowapi.util import get_remote_address
 from app.core.supabase_client import supabase_anon, supabase_admin
 from app.core.auth_middleware import get_current_user, issue_app_token
 from app.core.apple_auth import verify_apple_identity_token
+from app.core.social_verify import (
+    google_enabled, facebook_enabled, verify_google_id_token, verify_facebook_access_token,
+)
 from app.services.program_service import tier_status
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
@@ -46,8 +49,48 @@ def generate_referral_code(length=8):
     characters = string.ascii_uppercase + string.digits
     return ''.join(random.choice(characters) for i in range(length))
 
+def _sign_in_social_member(email: str, full_name: str, provider: str) -> dict:
+    """Find the member with this verified email, or create one (with the welcome bonus),
+    and return a backend session token."""
+    email = email.strip().lower()
+    existing = supabase_admin.table("users").select("id, deleted_at").eq("email", email).execute()
+    if existing.data:
+        if existing.data[0].get("deleted_at"):
+            raise HTTPException(status_code=403, detail="This account has been deleted.")
+        user_id = existing.data[0]["id"]
+    else:
+        user_id = str(uuid.uuid4())
+        supabase_admin.table("users").insert({
+            "id": user_id,
+            "email": email,
+            "full_name": (full_name or email.split("@")[0]).strip(),
+            "referral_code": generate_referral_code(),
+            "profile_complete": False,
+        }).execute()
+        try:
+            PointsService.award_points(user_id=user_id, points=100, type="signup_bonus", description="Welcome Bonus")
+            supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
+        except Exception as e:
+            print(f"Welcome bonus warning ({provider}): {e}")
+    token = issue_app_token(user_id, email)
+    return {"access_token": token, "refresh_token": token, "token_type": "bearer"}
+
+
 @router.post("/social-login", response_model=TokenResponse)
 def social_login(creds: SocialLoginRequest):
+    # 0. Google and Facebook are verified directly with Google / Facebook when configured.
+    if creds.provider in ("google", "facebook"):
+        enabled = google_enabled() if creds.provider == "google" else facebook_enabled()
+        if not enabled:
+            raise HTTPException(status_code=400, detail="This sign-in option isn't set up yet. Please use email.")
+        try:
+            profile = (verify_google_id_token(creds.id_token) if creds.provider == "google"
+                       else verify_facebook_access_token(creds.access_token))
+        except ValueError as e:
+            print(f"{creds.provider} sign-in rejected: {e}")
+            raise HTTPException(status_code=401, detail=str(e) if "email" in str(e).lower() else
+                                f"{creds.provider.capitalize()} sign-in failed. Please try again.")
+        return _sign_in_social_member(profile["email"], profile["name"], creds.provider)
     # 1. Attempt standard Supabase social verification
     try:
         auth_response = supabase_anon.auth.sign_in_with_id_token({
