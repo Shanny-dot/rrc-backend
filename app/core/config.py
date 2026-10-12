@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     ADMIN_EMAIL: str
     FRONTEND_URL: HttpUrl
+    # Comma-separated audiences accepted for Sign in with Apple tokens
+    # (the iOS bundle ID, plus a Services ID if web sign-in is ever added).
+    APPLE_CLIENT_IDS: str = "com.rrc.referralapp"
 
     class Config:
         env_file = ".env"

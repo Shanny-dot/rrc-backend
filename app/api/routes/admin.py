@@ -8,13 +8,15 @@ from app.schemas.redemption import RedemptionRejectRequest
 from app.services.points_service import PointsService
 from app.services.email_service import EmailService
 from app.services.push_service import PushService
+from app.schemas.referral import ReferralStageUpdate
+from app.services.program_service import get_int_setting
 import datetime
 import json
 import os
 
-# For now, get_current_admin is a placeholder or simplistic check in auth_middleware
-# Assuming the route is protected by depends
-router = APIRouter()
+# Every route in this router requires a signed-in admin. Applying the check at
+# router level means a newly added admin route can't be left unprotected by mistake.
+router = APIRouter(dependencies=[Depends(get_current_admin)])
 
 DELETED_USERS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "deleted_users.json")
 
@@ -98,7 +100,7 @@ def update_user_profile(id: str, data: dict = Body(...), admin: dict = Depends(g
     """Update user profile fields from admin panel."""
     ALLOWED_FIELDS = {
         "full_name", "mobile", "gender", "dob", "industry",
-        "home_ownership_status", "annual_income", "street_address",
+        "home_ownership", "home_ownership_status", "annual_income", "street_address",
         "city", "state", "postal_code", "role"
     }
     update_data = {k: v for k, v in data.items() if k in ALLOWED_FIELDS}
@@ -122,17 +124,17 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
     resp = supabase_admin.table("users").update({"total_points": new_points}).eq("id", id).execute()
     
     if diff != 0:
-        tx_type = "admin_award" if diff > 0 else "admin_deduct"
+        # Logged to the same table the app reads, with a signed amount, so members see it in Recent Activity.
         try:
-            supabase_admin.table("point_transactions").insert({
+            supabase_admin.table("transactions").insert({
                 "user_id": id,
-                "points": abs(diff),
-                "type": tx_type,
-                "description": f"{reason} (Updated from {current_points} to {new_points} pts)"
+                "points": diff,
+                "type": "admin_adjustment",
+                "description": (reason or "Admin adjustment").strip(),
             }).execute()
         except Exception as e:
             print("Transaction log warning:", e)
-            
+
     return {"message": f"Points updated to {new_points}", "data": resp.data[0]}
 
 @router.get("/events")
@@ -333,3 +335,74 @@ def admin_list_transactions(user_id: str = None):
          query = query.eq("user_id", user_id)
     resp = query.order("created_at", desc=True).execute()
     return resp.data
+
+
+@router.put("/redemptions/{id}/sent")
+def mark_redemption_sent(id: str, body: dict = Body(default={})):
+    """Mark an approved (or pending) redemption as sent to the member."""
+    red_resp = supabase_admin.table("redemptions").select("*, users(email, fcm_token), rewards(title)").eq("id", id).execute()
+    if not red_resp.data:
+        raise HTTPException(status_code=404, detail="Redemption not found")
+    redemption = red_resp.data[0]
+    if redemption["status"] == "rejected":
+        raise HTTPException(status_code=400, detail="A rejected redemption can't be marked as sent")
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    update = {"status": "sent", "sent_at": now_iso}
+    if not redemption.get("actioned_at"):
+        update["actioned_at"] = now_iso
+    note = (body or {}).get("admin_note")
+    if note:
+        update["admin_note"] = note
+    supabase_admin.table("redemptions").update(update).eq("id", id).execute()
+
+    reward_title = (redemption.get("rewards") or {}).get("title") or "Your reward"
+    user = redemption.get("users") or {}
+    if user.get("email"):
+        EmailService.send_redemption_sent(to_email=user["email"], reward_name=reward_title, note=note)
+    if user.get("fcm_token"):
+        PushService.send_push_notification(user["fcm_token"], "Your reward is on its way", f"{reward_title} has been sent.")
+    return {"message": "Marked as sent"}
+
+
+REFERRAL_STAGES = ["invited", "contacted", "loan_in_progress", "settled", "rewarded", "closed"]
+
+@router.get("/referrals")
+def admin_list_referrals():
+    refs = supabase_admin.table("referrals").select("*").order("created_at", desc=True).execute().data or []
+    ids = list({r["referrer_id"] for r in refs if r.get("referrer_id")})
+    people = {}
+    if ids:
+        rows = supabase_admin.table("users").select("id, full_name, email").in_("id", ids).execute().data or []
+        people = {u["id"]: u for u in rows}
+    for r in refs:
+        r["referrer"] = people.get(r.get("referrer_id"))
+    return refs
+
+@router.put("/referrals/{id}/stage")
+def update_referral_stage(id: str, body: ReferralStageUpdate):
+    """Move a referral along: invited → contacted → loan_in_progress → settled → rewarded (or closed).
+    Moving to "rewarded" awards the referral points once."""
+    status = (body.status or "").strip().lower()
+    if status not in REFERRAL_STAGES:
+        raise HTTPException(status_code=400, detail=f"Status must be one of: {', '.join(REFERRAL_STAGES)}")
+    ref_resp = supabase_admin.table("referrals").select("*").eq("id", id).execute()
+    if not ref_resp.data:
+        raise HTTPException(status_code=404, detail="Referral not found")
+    ref = ref_resp.data[0]
+
+    update = {"status": status, "stage_updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    if body.admin_note is not None:
+        update["admin_note"] = body.admin_note
+
+    if status == "rewarded" and not (ref.get("points_earned") or 0):
+        points = body.points if body.points is not None else get_int_setting("referral_points")
+        if not points or points <= 0:
+            raise HTTPException(status_code=400, detail="Set the referral points (in the request or the referral_points setting) before rewarding.")
+        PointsService.award_points(
+            user_id=ref["referrer_id"], points=points, type="referral",
+            description=f"Referral reward: {ref.get('referred_name') or 'your friend'}", reference_id=id,
+        )
+        update["points_earned"] = points
+
+    resp = supabase_admin.table("referrals").update(update).eq("id", id).execute()
+    return resp.data[0] if resp.data else update

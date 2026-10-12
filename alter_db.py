@@ -1,7 +1,8 @@
 import psycopg2
 import os
 
-DATABASE_URL = "postgresql://postgres:Shaan%401109@db.tmsdysbyvapdkbmlcurl.supabase.co:5432/postgres"
+# Read from the environment; never commit database credentials.
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 def main():
     try:

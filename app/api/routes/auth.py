@@ -4,7 +4,9 @@ from typing import Optional
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from app.core.supabase_client import supabase_anon, supabase_admin
-from app.core.auth_middleware import get_current_user
+from app.core.auth_middleware import get_current_user, issue_app_token
+from app.core.apple_auth import verify_apple_identity_token
+from app.services.program_service import tier_status
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
@@ -84,18 +86,21 @@ def social_login(creds: SocialLoginRequest):
     except Exception as e:
         print(f"Supabase social login attempt failed: {e}")
 
-    # 2. Apple Sign-In direct fallback (cryptographically verified on iOS device by Apple Secure Enclave)
+    # 2. Apple Sign-In fallback. The identity token's signature, issuer, audience,
+    #    expiry and nonce are verified against Apple's published keys before it is trusted.
     if creds.provider == "apple" and creds.id_token:
         try:
-            claims = jwt.decode(creds.id_token, options={"verify_signature": False})
-            apple_sub = claims.get("sub")
-            if not apple_sub:
-                raise Exception("Apple token missing sub claim")
-                
+            claims = verify_apple_identity_token(creds.id_token, creds.raw_nonce)
+        except ValueError as verify_err:
+            print(f"Apple fallback rejected: {verify_err}")
+            raise HTTPException(status_code=401, detail="Apple authentication failed. Please try again.")
+
+        try:
+            apple_sub = claims["sub"]
             apple_email = claims.get("email") or f"apple_{apple_sub[:8]}@privaterelay.appleid.com"
             apple_email = apple_email.strip().lower()
 
-            user_db = supabase_admin.table("users").select("*").or_(f"id.eq.{apple_sub},email.eq.{apple_email}").execute()
+            user_db = supabase_admin.table("users").select("id").eq("email", apple_email).execute()
             if user_db.data:
                 user_id = user_db.data[0]["id"]
             else:
@@ -109,19 +114,17 @@ def social_login(creds: SocialLoginRequest):
                     "profile_complete": False
                 }).execute()
 
-            token = jwt.encode(
-                {"sub": user_id, "email": apple_email, "exp": int(time.time()) + 86400 * 30},
-                "rrc_secret_jwt_key_2026",
-                algorithm="HS256"
-            )
+            token = issue_app_token(user_id, apple_email)
             return {
                 "access_token": token,
                 "refresh_token": token,
                 "token_type": "bearer"
             }
+        except HTTPException:
+            raise
         except Exception as apple_err:
             print(f"Apple fallback error: {apple_err}")
-            raise HTTPException(status_code=400, detail=f"Apple authentication error: {apple_err}")
+            raise HTTPException(status_code=400, detail="Apple authentication failed. Please try again.")
 
     raise HTTPException(status_code=400, detail="Social authentication failed. Please try again.")
 
@@ -304,28 +307,8 @@ def login(request: Request, creds: LoginCredentials):
     clean_email = creds.email.strip().lower()
     clean_password = creds.password.strip()
 
-    # Guaranteed Demo Login for Apple App Store Review
-    if clean_email == "shantanufadnavis5@gmail.com" and clean_password == "Shaan@1109":
-        try:
-            auth_response = supabase_anon.auth.sign_in_with_password({
-                "email": clean_email,
-                "password": clean_password
-            })
-            if auth_response.session:
-                return TokenResponse(access_token=auth_response.session.access_token)
-        except Exception as e:
-            print("Supabase auth exception for demo user, issuing guaranteed token:", e)
-
-        # Fallback guaranteed token
-        user_db = supabase_admin.table("users").select("*").eq("email", clean_email).execute()
-        user_id = user_db.data[0]["id"] if user_db.data else "b4865c48-fd10-4619-96f2-65ea8e54eac2"
-        demo_token = jwt.encode(
-            {"sub": user_id, "email": clean_email, "exp": int(time.time()) + 86400 * 30},
-            "rrc_secret_jwt_key_2026",
-            algorithm="HS256"
-        )
-        return TokenResponse(access_token=demo_token)
-
+    # The App Store review demo account signs in through Supabase like any other
+    # member; it no longer has a hard-coded password or a backend-minted fallback token.
     try:
         auth_response = supabase_anon.auth.sign_in_with_password({
             "email": clean_email,
@@ -353,12 +336,16 @@ def forgot_password(req: ForgotPasswordRequest):
 @router.get("/me")
 def get_me(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
-    print(f"DEBUG /me: Looking up user_id={user_id}")
     resp = supabase_admin.table("users").select("*").eq("id", user_id).execute()
-    print(f"DEBUG /me: Supabase response={resp.data}")
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
-    return resp.data[0]
+    me = dict(resp.data[0])
+    try:
+        me["tier"] = tier_status(user_id, me.get("total_points") or 0)
+    except Exception as e:
+        print(f"Tier status warning: {e}")
+        me["tier"] = None
+    return me
 
 @router.put("/profile")
 def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current_user)):
