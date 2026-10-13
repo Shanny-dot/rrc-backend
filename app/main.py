@@ -6,6 +6,18 @@ from app.api.routes import auth, events, rewards, referrals, transactions, admin
 
 app = FastAPI(title="RRC Backend API")
 
+# Turn unexpected errors into a JSON 500 *inside* the CORS middleware, so browsers (the admin
+# site) can read the error instead of reporting a generic "Network Error".
+@app.middleware("http")
+async def json_errors(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {exc}"[:500]})
+
+# CORS setup (added after json_errors, so it wraps it and error responses keep CORS headers)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
