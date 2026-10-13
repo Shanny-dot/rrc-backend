@@ -114,7 +114,10 @@ class Query:
         data = [self._embed(r) for r in copy.deepcopy(matched)]
         if self._order:
             k, desc = self._order
-            data.sort(key=lambda r: (r.get(k) is None, str(r.get(k))), reverse=desc)
+            def sort_key(r):
+                v = r.get(k)
+                return (v is None, (0, v) if isinstance(v, (int, float)) else (1, str(v)))
+            data.sort(key=sort_key, reverse=desc)
         if self._single:
             if len(data) != 1:
                 raise APIError({"message": "JSON object requested, multiple (or no) rows returned", "code": "PGRST116"})
