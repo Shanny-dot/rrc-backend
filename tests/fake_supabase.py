@@ -125,9 +125,35 @@ class Query:
         return Result(data)
 
 
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
 class FakeAuth:
+    """Supabase Auth stand-in. `accounts` maps email -> (password, auth user id, full_name)."""
+
+    def __init__(self):
+        self.accounts, self.sessions, self.reset_requests = {}, {}, []
+
     def get_user(self, token):
-        raise Exception("not a Supabase session token")
+        uid = self.sessions.get(token)
+        if not uid:
+            raise Exception("not a Supabase session token")
+        email = next(e for e, a in self.accounts.items() if a[1] == uid)
+        return _Obj(user=_Obj(id=uid, email=email, user_metadata={"full_name": self.accounts[email][2]}))
+
+    def sign_in_with_password(self, creds):
+        acct = self.accounts.get(creds["email"])
+        if not acct or acct[0] != creds["password"]:
+            raise Exception("Invalid login credentials")
+        token = f"sb-session-{uuid.uuid4()}"
+        self.sessions[token] = acct[1]
+        user = _Obj(id=acct[1], email=creds["email"], user_metadata={"full_name": acct[2]})
+        return _Obj(session=_Obj(access_token=token, user=user), user=user)
+
+    def reset_password_for_email(self, email, options=None):
+        self.reset_requests.append((email, options or {}))
 
     class admin:  # noqa: N801
         @staticmethod

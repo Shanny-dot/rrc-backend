@@ -59,7 +59,8 @@ def _authenticate(token: str) -> dict:
     try:
         user_response = supabase_anon.auth.get_user(token)
         if user_response and user_response.user:
-            return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated"}
+            return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated",
+                    "user_metadata": getattr(user_response.user, "user_metadata", None) or {}}
     except Exception:
         pass
 

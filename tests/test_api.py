@@ -242,3 +242,29 @@ def test_errors_are_readable_by_the_admin_site(env):
     assert r.status_code == 500
     assert r.headers.get("access-control-allow-origin") == "https://rrc-admin.vercel.app"
     assert "category" in r.json()["detail"]
+
+
+def test_login_repairs_missing_profile(env):
+    """An account that exists in Supabase Auth but has no member profile can log in,
+    gets a profile with the welcome bonus, and every screen works."""
+    db, c = env["db"], env["c"]
+    orphan_id = "00000000-0000-4000-8000-0000000000d4"
+    db.auth.accounts["varun@example.com"] = ("Secret123!", orphan_id, "Varun")
+    r = c.post("/api/v1/auth/login", json={"email": "Varun@Example.com ", "password": "Secret123!"})
+    assert r.status_code == 200, r.text
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me = c.get("/api/v1/auth/me", headers=h)
+    assert me.status_code == 200, me.text
+    assert me.json()["email"] == "varun@example.com" and me.json()["total_points"] == 100
+    # Logging in again doesn't create a second profile or a second bonus.
+    c.post("/api/v1/auth/login", json={"email": "varun@example.com", "password": "Secret123!"})
+    assert len([u for u in db.tables["users"] if u["email"] == "varun@example.com"]) == 1
+    assert c.post("/api/v1/auth/login", json={"email": "varun@example.com", "password": "wrong"}).status_code == 400
+
+
+def test_forgot_password_link_opens_reset_page(env):
+    r = env["c"].post("/api/v1/auth/forgot-password", json={"email": "Manoj@Example.com"})
+    assert r.status_code == 200 and r.json()["success"]
+    email, opts = env["db"].auth.reset_requests[-1]
+    assert email == "manoj@example.com"
+    assert opts["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
