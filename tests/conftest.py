@@ -80,41 +80,41 @@ def seed(db):
          "total_points": 100, "referral_code": "OLD00001", "deleted_at": None},
     ]
     t["rewards"] = [
-        {"id": "r-sky", "title": "Tandem Skydive", "category": "Experiences", "points_required": 300, "stock": 15,
+        {"id": "22222222-0000-4000-8000-000000000001", "title": "Tandem Skydive", "category": "Experiences", "points_required": 300, "stock": 15,
          "is_active": True, "created_at": _iso(-10), "description": "Jump!", "what_you_get": "One tandem jump",
          "delivery_info": None, "expiry_info": "12 months", "terms": "T&Cs", "dollar_value": 350},
-        {"id": "r-vip", "title": "Exclusive VIP Property Tour", "category": "Experiences", "points_required": 5000,
+        {"id": "22222222-0000-4000-8000-000000000002", "title": "Exclusive VIP Property Tour", "category": "Experiences", "points_required": 5000,
          "stock": 2, "is_active": True, "created_at": _iso(-9)},
-        {"id": "r-toy", "title": "Toy World Card", "category": "Shopping", "points_required": 50, "stock": None,
+        {"id": "22222222-0000-4000-8000-000000000003", "title": "Toy World Card", "category": "Shopping", "points_required": 50, "stock": None,
          "is_active": True, "created_at": _iso(-8)},
     ]
     t["events"] = [
-        {"id": "e-up", "title": "First Home Buyers Breakfast", "category": "Real Estate", "location": "Sydney CBD",
+        {"id": "11111111-0000-4000-8000-000000000001", "title": "First Home Buyers Breakfast", "category": "Real Estate", "location": "Sydney CBD",
          "event_date": _iso(7), "points_for_attending": 100, "points_for_referring": 50, "is_active": True,
          "created_at": _iso(-3)},
-        {"id": "e-past", "title": "Market Update", "location": "Chatswood", "event_date": _iso(-20),
+        {"id": "11111111-0000-4000-8000-000000000002", "title": "Market Update", "location": "Chatswood", "event_date": _iso(-20),
          "points_for_attending": 50, "points_for_referring": 0, "is_active": True, "created_at": _iso(-30)},
     ]
     t["redemptions"] = [
-        {"id": "red-old", "user_id": MEMBER_ID, "reward_id": "r-toy", "status": "pending", "points_used": 50,
+        {"id": "33333333-0000-4000-8000-000000000001", "user_id": MEMBER_ID, "reward_id": "22222222-0000-4000-8000-000000000003", "status": "pending", "points_used": 50,
          "requested_at": _iso(-2), "actioned_at": None, "sent_at": None},
     ]
     t["transactions"] = [
-        {"id": "tx1", "user_id": MEMBER_ID, "type": "signup_bonus", "points": 100, "description": "Welcome Bonus",
+        {"id": "55555555-0000-4000-8000-000000000001", "user_id": MEMBER_ID, "type": "signup_bonus", "points": 100, "description": "Welcome Bonus",
          "created_at": _iso(-40)},
-        {"id": "tx2", "user_id": MEMBER_ID, "type": "admin_adjustment", "points": 2000, "description": "Event bonus",
+        {"id": "55555555-0000-4000-8000-000000000002", "user_id": MEMBER_ID, "type": "admin_adjustment", "points": 2000, "description": "Event bonus",
          "created_at": _iso(-5)},
-        {"id": "tx3", "user_id": MEMBER_ID, "type": "redemption", "points": -50,
+        {"id": "55555555-0000-4000-8000-000000000003", "user_id": MEMBER_ID, "type": "redemption", "points": -50,
          "description": "Redeemed Toy World Card", "created_at": _iso(-2)},
     ]
     t["referrals"] = [
-        {"id": "ref-old", "referrer_id": MEMBER_ID, "referred_name": "Chaitanya", "referred_mobile": "0412345678",
+        {"id": "44444444-0000-4000-8000-000000000001", "referrer_id": MEMBER_ID, "referred_name": "Chaitanya", "referred_mobile": "0412345678",
          "referred_email": "chai@example.com", "status": "pending", "points_earned": 0, "created_at": _iso(-1)},
     ]
     t["tiers"] = [
-        {"id": "t1", "name": "Silver", "min_points": 0, "benefits": "Earn points", "sort_order": 1},
-        {"id": "t2", "name": "Gold", "min_points": 1000, "benefits": "Everything in Silver\nPriority invites", "sort_order": 2},
-        {"id": "t3", "name": "Platinum", "min_points": 5000, "benefits": "Everything in Gold", "sort_order": 3},
+        {"id": "66666666-0000-4000-8000-000000000001", "name": "Silver", "min_points": 0, "benefits": "Earn points", "sort_order": 1},
+        {"id": "66666666-0000-4000-8000-000000000002", "name": "Gold", "min_points": 1000, "benefits": "Everything in Silver\nPriority invites", "sort_order": 2},
+        {"id": "66666666-0000-4000-8000-000000000003", "name": "Platinum", "min_points": 5000, "benefits": "Everything in Gold", "sort_order": 3},
     ]
     t["app_content"] = [
         {"key": "referral_points", "value": "500"}, {"key": "tier_basis", "value": "lifetime"},

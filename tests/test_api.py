@@ -23,7 +23,7 @@ def test_health(env):
 def test_admin_routes_require_admin(env):
     c = env["c"]
     for method, path in [("get", "/api/v1/admin/redemptions"), ("get", "/api/v1/admin/transactions"),
-                         ("get", "/api/v1/admin/referrals"), ("put", "/api/v1/admin/redemptions/red-old/approve"),
+                         ("get", "/api/v1/admin/referrals"), ("put", "/api/v1/admin/redemptions/33333333-0000-4000-8000-000000000001/approve"),
                          ("post", "/api/v1/admin/events")]:
         assert getattr(c, method)(path).status_code in (401, 403), f"{path} open without login"
         assert getattr(c, method)(path, headers=env["member"]).status_code == 403, f"{path} open to members"
@@ -55,9 +55,9 @@ def test_activity_status_labels(env):
     r = env["c"].get("/api/v1/transactions/", headers=env["member"])
     assert r.status_code == 200, r.text
     by_id = {a["id"]: a for a in r.json()}
-    assert by_id["tx2"]["title"] == "Points added by Reliance team"
-    assert by_id["tx2"]["status_label"] == "Points added" and by_id["tx2"]["reason"] == "Event bonus"
-    assert by_id["tx3"]["status_label"] == "Pending" and by_id["tx3"]["redemption_id"] == "red-old"
+    assert by_id["55555555-0000-4000-8000-000000000002"]["title"] == "Points added by Reliance team"
+    assert by_id["55555555-0000-4000-8000-000000000002"]["status_label"] == "Points added" and by_id["55555555-0000-4000-8000-000000000002"]["reason"] == "Event bonus"
+    assert by_id["55555555-0000-4000-8000-000000000003"]["status_label"] == "Pending" and by_id["55555555-0000-4000-8000-000000000003"]["redemption_id"] == "33333333-0000-4000-8000-000000000001"
 
 
 def test_app_version(env):
@@ -68,26 +68,26 @@ def test_app_version(env):
 # ── Events ────────────────────────────────────────────────────────────────
 def test_events_rsvp_cycle(env):
     c, h = env["c"], env["member"]
-    assert {e["id"] for e in c.get("/api/v1/events/").json()} == {"e-up", "e-past"}
-    assert c.post("/api/v1/events/e-past/rsvp", headers=h).status_code == 400, "past event accepted an RSVP"
-    r = c.post("/api/v1/events/e-up/rsvp", headers=h)
+    assert {e["id"] for e in c.get("/api/v1/events/").json()} == {"11111111-0000-4000-8000-000000000001", "11111111-0000-4000-8000-000000000002"}
+    assert c.post("/api/v1/events/11111111-0000-4000-8000-000000000002/rsvp", headers=h).status_code == 400, "past event accepted an RSVP"
+    r = c.post("/api/v1/events/11111111-0000-4000-8000-000000000001/rsvp", headers=h)
     assert r.status_code == 200, r.text
-    assert c.post("/api/v1/events/e-up/rsvp", headers=h).status_code == 400  # no double RSVP
-    assert [x["event_id"] for x in c.get("/api/v1/events/my-rsvps", headers=h).json()] == ["e-up"]
-    assert c.delete("/api/v1/events/e-up/rsvp", headers=h).status_code == 200
+    assert c.post("/api/v1/events/11111111-0000-4000-8000-000000000001/rsvp", headers=h).status_code == 400  # no double RSVP
+    assert [x["event_id"] for x in c.get("/api/v1/events/my-rsvps", headers=h).json()] == ["11111111-0000-4000-8000-000000000001"]
+    assert c.delete("/api/v1/events/11111111-0000-4000-8000-000000000001/rsvp", headers=h).status_code == 200
     assert c.get("/api/v1/events/my-rsvps", headers=h).json() == []
-    assert c.post("/api/v1/events/e-up/rsvp", headers=h).status_code == 200  # re-RSVP after cancelling
+    assert c.post("/api/v1/events/11111111-0000-4000-8000-000000000001/rsvp", headers=h).status_code == 200  # re-RSVP after cancelling
     assert len(c.get("/api/v1/events/my-rsvps", headers=h).json()) == 1
 
 
 def test_invite_guest_to_event(env):
-    r = env["c"].post("/api/v1/events/e-up/invite-guests", headers=env["member"],
+    r = env["c"].post("/api/v1/events/11111111-0000-4000-8000-000000000001/invite-guests", headers=env["member"],
                       json=[{"guest_name": "Asha", "guest_email": "asha@example.com"}])
     assert r.status_code == 200, r.text
 
 
 def test_check_in_only_on_event_day(env):
-    assert env["c"].post("/api/v1/events/e-up/scan-attendance", headers=env["member"]).status_code == 400
+    assert env["c"].post("/api/v1/events/11111111-0000-4000-8000-000000000001/scan-attendance", headers=env["member"]).status_code == 400
 
 
 def test_admin_create_event_with_category(env):
@@ -103,32 +103,32 @@ def test_admin_create_event_with_category(env):
 def test_rewards_list_and_detail(env):
     c = env["c"]
     ids = [r["id"] for r in c.get("/api/v1/rewards/").json()]
-    assert ids[0] == "r-toy"  # sorted by points
-    d = c.get("/api/v1/rewards/r-sky").json()
+    assert ids[0] == "22222222-0000-4000-8000-000000000003"  # sorted by points
+    d = c.get("/api/v1/rewards/22222222-0000-4000-8000-000000000001").json()
     assert d["what_you_get"] == "One tandem jump" and d["dollar_value"] == 350
     assert d["delivery_info"] == "Emailed within 5 business days"  # falls back to the default setting
 
 
 def test_wishlist(env):
     c, h = env["c"], env["member"]
-    assert c.post("/api/v1/rewards/r-vip/wishlist", headers=h).status_code == 200
-    assert c.post("/api/v1/rewards/r-vip/wishlist", headers=h).status_code == 200  # idempotent
-    assert c.get("/api/v1/rewards/wishlist", headers=h).json() == ["r-vip"]
-    assert c.delete("/api/v1/rewards/r-vip/wishlist", headers=h).status_code == 200
+    assert c.post("/api/v1/rewards/22222222-0000-4000-8000-000000000002/wishlist", headers=h).status_code == 200
+    assert c.post("/api/v1/rewards/22222222-0000-4000-8000-000000000002/wishlist", headers=h).status_code == 200  # idempotent
+    assert c.get("/api/v1/rewards/wishlist", headers=h).json() == ["22222222-0000-4000-8000-000000000002"]
+    assert c.delete("/api/v1/rewards/22222222-0000-4000-8000-000000000002/wishlist", headers=h).status_code == 200
     assert c.get("/api/v1/rewards/wishlist", headers=h).json() == []
 
 
 def test_redeem_and_insufficient(env):
     c, h, db = env["c"], env["member"], env["db"]
     before = user(db, MEMBER_ID)["total_points"]
-    r = c.post("/api/v1/rewards/r-sky/redeem", headers=h)
+    r = c.post("/api/v1/rewards/22222222-0000-4000-8000-000000000001/redeem", headers=h)
     assert r.status_code == 200, r.text
     red_id = r.json()["id"]
     assert user(db, MEMBER_ID)["total_points"] == before - 300
-    assert next(x for x in db.tables["rewards"] if x["id"] == "r-sky")["stock"] == 14
+    assert next(x for x in db.tables["rewards"] if x["id"] == "22222222-0000-4000-8000-000000000001")["stock"] == 14
     linked = [t for t in tx(db, MEMBER_ID) if t.get("reference_id") == red_id]
     assert linked and linked[0]["points"] == -300
-    assert c.post("/api/v1/rewards/r-vip/redeem", headers=h).status_code == 400  # not enough points
+    assert c.post("/api/v1/rewards/22222222-0000-4000-8000-000000000002/redeem", headers=h).status_code == 400  # not enough points
     acts = {a["id"]: a for a in c.get("/api/v1/transactions/", headers=h).json()}
     assert acts[linked[0]["id"]]["status_label"] == "Pending"
     env["new_red"] = red_id
@@ -152,7 +152,7 @@ def test_admin_approve_then_sent(env):
 def test_admin_reject_refunds(env):
     c, db = env["c"], env["db"]
     before = user(db, MEMBER_ID)["total_points"]
-    r = c.put("/api/v1/admin/redemptions/red-old/reject", headers=env["admin"], json={"admin_note": "Out of stock"})
+    r = c.put("/api/v1/admin/redemptions/33333333-0000-4000-8000-000000000001/reject", headers=env["admin"], json={"admin_note": "Out of stock"})
     assert r.status_code == 200, r.text
     assert user(db, MEMBER_ID)["total_points"] == before + 50
 
@@ -188,16 +188,16 @@ def test_admin_referral_stages_and_points(env):
     assert any(r["referrer"] and r["referrer"]["full_name"] == "Manoj Kumar" for r in listing)
     before = user(db, MEMBER_ID)["total_points"]
     for stage in ["contacted", "loan_in_progress", "settled"]:
-        assert c.put("/api/v1/admin/referrals/ref-old/stage", headers=a, json={"status": stage}).status_code == 200
-    r = c.put("/api/v1/admin/referrals/ref-old/stage", headers=a, json={"status": "rewarded"})
+        assert c.put("/api/v1/admin/referrals/44444444-0000-4000-8000-000000000001/stage", headers=a, json={"status": stage}).status_code == 200
+    r = c.put("/api/v1/admin/referrals/44444444-0000-4000-8000-000000000001/stage", headers=a, json={"status": "rewarded"})
     assert r.status_code == 200, r.text
     assert user(db, MEMBER_ID)["total_points"] == before + 500  # referral_points setting
-    c.put("/api/v1/admin/referrals/ref-old/stage", headers=a, json={"status": "rewarded"})
+    c.put("/api/v1/admin/referrals/44444444-0000-4000-8000-000000000001/stage", headers=a, json={"status": "rewarded"})
     assert user(db, MEMBER_ID)["total_points"] == before + 500, "points awarded twice"
     s = c.get("/api/v1/referrals/summary", headers=env["member"]).json()
     assert s["points_earned"] == 500 and s["points_per_referral"] == 500 and s["referral_code"] == "MANOJ123"
     mine = {r["id"]: r for r in c.get("/api/v1/referrals/", headers=env["member"]).json()}
-    assert mine["ref-old"]["status"] == "rewarded"
+    assert mine["44444444-0000-4000-8000-000000000001"]["status"] == "rewarded"
 
 
 # ── Admin: points, profile, delete ────────────────────────────────────────
