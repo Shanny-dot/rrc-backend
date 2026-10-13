@@ -12,6 +12,15 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     ADMIN_EMAIL: str
     FRONTEND_URL: HttpUrl
+    # Comma-separated audiences accepted for Sign in with Apple tokens
+    # (the iOS bundle ID, plus a Services ID if web sign-in is ever added).
+    APPLE_CLIENT_IDS: str = "com.rrc.referralapp"
+    # Google sign-in: comma-separated OAuth client IDs whose ID tokens are accepted
+    # (the Web client ID the app passes as serverClientId). Empty = Google sign-in off.
+    GOOGLE_CLIENT_IDS: str = ""
+    # Facebook sign-in. Empty = Facebook sign-in off.
+    FACEBOOK_APP_ID: str = ""
+    FACEBOOK_APP_SECRET: str = ""
 
     class Config:
         env_file = ".env"

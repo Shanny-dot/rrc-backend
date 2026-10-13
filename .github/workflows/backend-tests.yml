@@ -1,0 +1,35 @@
+name: Backend tests
+
+# Runs the API end-to-end tests (real route code, in-memory database) on release branches.
+on:
+  push:
+    branches: ["release/**"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          set -o pipefail
+          pip install -r requirements.txt httpx pytest 2>&1 | tail -5 | tee step.log
+      - name: Run API tests
+        run: |
+          set -o pipefail
+          python -m pytest tests -q -rA --tb=short -p no:cacheprovider 2>&1 | tee step.log
+      - name: Report results
+        if: always()
+        run: |
+          grep -E "^(PASSED|FAILED|ERROR)|passed|failed|error" step.log | tail -n 60 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' > summary.txt
+          echo "::notice title=Test results::$(cat summary.txt)"
+      - name: Report failure detail
+        if: failure()
+        run: |
+          tail -n 120 step.log | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' > tail.txt
+          echo "::error title=Failure output::$(cat tail.txt)"

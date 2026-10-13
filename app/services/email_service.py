@@ -31,19 +31,23 @@ class EmailService:
             print(f"Failed to send email: {e}")
 
     @staticmethod
-    def send_referral_invite(to_email: str, inviter_name: str):
+    def send_referral_invite(to_email: str, inviter_name: str, referral_code: str = None, invite_link: str = None):
         if not _EMAIL_ENABLED:
             print("Email skipped: RESEND_API_KEY not configured")
             return
+        code_html = f"<p>Use {inviter_name}'s code <strong>{referral_code}</strong> when you sign up.</p>" if referral_code else ""
+        link_html = f'<p><a href="{invite_link}">Join Reliance Rewards</a></p>' if invite_link else ""
         html_content = f"""
-        <h1>You're invited to join RRC!</h1>
-        <p>{inviter_name} has invited you to join our exclusive referral and rewards platform.</p>
+        <h1>You're invited to join Reliance Rewards</h1>
+        <p>{inviter_name} has invited you to join Reliance Rewards. A Reliance broker may contact you to see how we can help.</p>
+        {code_html}
+        {link_html}
         """
         try:
             r = resend.Emails.send({
                 "from": FROM_EMAIL,
                 "to": to_email,
-                "subject": f"{inviter_name} invited you to RRC",
+                "subject": f"{inviter_name} invited you to Reliance Rewards",
                 "html": html_content,
             })
             return r
@@ -154,5 +158,49 @@ class EmailService:
                 "html": html_content,
             })
             return r
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+
+    @staticmethod
+    def send_redemption_requested(to_email: str, reward_name: str, points_used: int, remaining_balance: int, reference: str):
+        if not _EMAIL_ENABLED:
+            print("Email skipped: RESEND_API_KEY not configured")
+            return
+        html_content = f"""
+        <h1>We've received your reward request</h1>
+        <p>Reward: <strong>{reward_name}</strong></p>
+        <p>Points used: {points_used}</p>
+        <p>New balance: {remaining_balance} pts</p>
+        <p>Reference number: <strong>{reference}</strong></p>
+        <p>We'll let you know when it's on its way.</p>
+        """
+        try:
+            return resend.Emails.send({
+                "from": FROM_EMAIL,
+                "to": to_email,
+                "subject": f"Reward request received ({reference})",
+                "html": html_content,
+            })
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+
+    @staticmethod
+    def send_redemption_sent(to_email: str, reward_name: str, note: str = None):
+        if not _EMAIL_ENABLED:
+            print("Email skipped: RESEND_API_KEY not configured")
+            return
+        note_html = f"<p>{note}</p>" if note else ""
+        html_content = f"""
+        <h1>Your reward is on its way</h1>
+        <p>"{reward_name}" has been sent.</p>
+        {note_html}
+        """
+        try:
+            return resend.Emails.send({
+                "from": FROM_EMAIL,
+                "to": to_email,
+                "subject": f"Your {reward_name} has been sent",
+                "html": html_content,
+            })
         except Exception as e:
             print(f"Failed to send email: {e}")

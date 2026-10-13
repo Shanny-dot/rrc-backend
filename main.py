@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from app.api.routes import auth, events, rewards, referrals, transactions, admin
+from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -12,7 +12,18 @@ app = FastAPI(title="RRC App API", description="API for Referral and Rewards Pla
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS setup
+# Turn unexpected errors into a JSON 500 *inside* the CORS middleware, so browsers (the admin
+# site) can read the error instead of reporting a generic "Network Error".
+@app.middleware("http")
+async def json_errors(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {exc}"[:500]})
+
+# CORS setup (added after json_errors, so it wraps it and error responses keep CORS headers)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -39,6 +50,10 @@ app.include_router(rewards.router, prefix="/api/v1/rewards", tags=["rewards"])
 app.include_router(referrals.router, prefix="/api/v1/referrals", tags=["referrals"])
 app.include_router(transactions.router, prefix="/api/v1/transactions", tags=["transactions"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
+app.include_router(content.router, prefix="/api/v1/content", tags=["content"])
+app.include_router(tiers.router, prefix="/api/v1/tiers", tags=["tiers"])
+app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])
+app.include_router(app_config.router, prefix="/api/v1/app", tags=["app"])
 
 if __name__ == "__main__":
     import uvicorn

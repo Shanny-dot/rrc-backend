@@ -11,6 +11,11 @@ class RewardBase(BaseModel):
     image_url: Optional[str] = None
     stock: Optional[int] = None
     is_active: bool = True
+    what_you_get: Optional[str] = None
+    delivery_info: Optional[str] = None
+    expiry_info: Optional[str] = None
+    terms: Optional[str] = None
+    dollar_value: Optional[float] = None
 
 class RewardCreate(RewardBase):
     pass
@@ -23,6 +28,11 @@ class RewardUpdate(BaseModel):
     image_url: Optional[str] = None
     stock: Optional[int] = None
     is_active: Optional[bool] = None
+    what_you_get: Optional[str] = None
+    delivery_info: Optional[str] = None
+    expiry_info: Optional[str] = None
+    terms: Optional[str] = None
+    dollar_value: Optional[float] = None
 
 class RewardInDB(RewardBase):
     id: uuid.UUID

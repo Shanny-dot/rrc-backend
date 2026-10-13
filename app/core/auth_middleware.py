@@ -1,35 +1,96 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
-import os
+import time
 from app.core.config import settings
 from app.core.supabase_client import supabase_admin, supabase_anon
 
 security = HTTPBearer()
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
-    # 1. Always verify via Supabase Auth (handles both HS256 and ES256 tokens correctly)
+# The previous code signed tokens with this value hard-coded in the repository,
+# so it must never be accepted again, even if someone copies it into JWT_SECRET.
+_LEAKED_SECRETS = {"rrc_secret_jwt_key_2026"}
+_MIN_SECRET_LENGTH = 32
+
+_secret = (settings.JWT_SECRET or "").strip()
+APP_TOKENS_ENABLED = len(_secret) >= _MIN_SECRET_LENGTH and _secret not in _LEAKED_SECRETS
+if not APP_TOKENS_ENABLED:
+    print(
+        "WARNING: JWT_SECRET is missing, too short (<32 chars) or a leaked value. "
+        "Backend-issued tokens (Apple Sign-In fallback) are disabled until it is set."
+    )
+
+APP_TOKEN_ISSUER = "rrc-backend"
+APP_TOKEN_TTL_SECONDS = 86400 * 30
+
+
+def issue_app_token(user_id: str, email: str = None) -> str:
+    """Issue a backend-signed token. Only used where Supabase cannot issue a session."""
+    if not APP_TOKENS_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sign-in is temporarily unavailable. Please try again later.",
+        )
+    now = int(time.time())
+    return jwt.encode(
+        {"sub": user_id, "email": email, "iss": APP_TOKEN_ISSUER, "iat": now, "exp": now + APP_TOKEN_TTL_SECONDS},
+        _secret,
+        algorithm="HS256",
+    )
+
+
+def _is_deleted(user_id: str) -> bool:
+    """True when staff have deleted this member (soft delete) or the profile row is gone."""
+    try:
+        resp = supabase_admin.table("users").select("*").eq("id", user_id).execute()
+        row = resp.data[0] if resp.data else None
+    except Exception as e:
+        print("Deleted-user check failed:", e)
+        row = None
+    if row and row.get("deleted_at"):
+        return True
+    # Legacy: deletions recorded only in deleted_users.json before the DB column was used
+    from app.api.routes.admin import load_deleted_users_map
+    return user_id in load_deleted_users_map()
+
+
+def _authenticate(token: str) -> dict:
+    # 1. Supabase-issued session tokens
     try:
         user_response = supabase_anon.auth.get_user(token)
         if user_response and user_response.user:
             return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated"}
-    except Exception as e:
-        pass
-
-    # 2. Fallback verification for direct verified tokens (Apple Sign-In / Demo login)
-    try:
-        payload = jwt.decode(token, "rrc_secret_jwt_key_2026", algorithms=["HS256"])
-        if payload and "sub" in payload:
-            return {"sub": payload["sub"], "email": payload.get("email"), "role": "authenticated"}
     except Exception:
         pass
+
+    # 2. Backend-issued tokens (Apple Sign-In fallback), signed with JWT_SECRET from the environment
+    if APP_TOKENS_ENABLED:
+        try:
+            payload = jwt.decode(
+                token, _secret, algorithms=["HS256"], issuer=APP_TOKEN_ISSUER,
+                options={"require": ["exp", "sub", "iss"]},
+            )
+            return {"sub": payload["sub"], "email": payload.get("email"), "role": "authenticated"}
+        except Exception:
+            pass
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    user = _authenticate(credentials.credentials)
+    if _is_deleted(user["sub"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account has been deleted.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
 
 def get_current_admin(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
@@ -39,12 +100,12 @@ def get_current_admin(current_user: dict = Depends(get_current_user)):
             detail="Invalid token payload",
             headers={"WWW-Authenticate": "Bearer"},
         )
-        
+
     resp = supabase_admin.table("users").select("is_admin").eq("id", user_id).execute()
     if not resp.data or not resp.data[0].get("is_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions. Admin access required.",
         )
-        
+
     return current_user
