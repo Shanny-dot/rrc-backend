@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from app.core.config import settings
 from app.core.supabase_client import supabase_anon, supabase_admin
 from app.core.auth_middleware import get_current_user, issue_app_token
 from app.core.apple_auth import verify_apple_identity_token
@@ -48,6 +49,40 @@ class FCMTokenRequest(BaseModel):
 def generate_referral_code(length=8):
     characters = string.ascii_uppercase + string.digits
     return ''.join(random.choice(characters) for i in range(length))
+
+def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
+    """Make sure a signed-in Supabase account has its public.users member profile.
+
+    Some accounts exist in Supabase Auth without a profile (an older registration that
+    failed half-way, or a profile removed by hand); they could sign in but every screen
+    then failed with "User not found". Returns the member id to use for the session:
+    normally user_id, or the id of an existing profile with the same email."""
+    email = (email or "").strip().lower()
+    by_id = supabase_admin.table("users").select("id, deleted_at").eq("id", user_id).execute()
+    if by_id.data:
+        if by_id.data[0].get("deleted_at"):
+            raise HTTPException(status_code=403, detail="This account has been deleted.")
+        return user_id
+    if email:
+        by_email = supabase_admin.table("users").select("id, deleted_at").eq("email", email).execute()
+        if by_email.data:
+            if by_email.data[0].get("deleted_at"):
+                raise HTTPException(status_code=403, detail="This account has been deleted.")
+            return by_email.data[0]["id"]
+    supabase_admin.table("users").insert({
+        "id": user_id,
+        "email": email,
+        "full_name": (full_name or email.split("@")[0] or "Member").strip(),
+        "referral_code": generate_referral_code(),
+        "profile_complete": False,
+    }).execute()
+    try:
+        PointsService.award_points(user_id=user_id, points=100, type="signup_bonus", description="Welcome Bonus")
+        supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
+    except Exception as e:
+        print(f"Welcome bonus warning (profile repair): {e}")
+    return user_id
+
 
 def _sign_in_social_member(email: str, full_name: str, provider: str) -> dict:
     """Find the member with this verified email, or create one (with the welcome bonus),
@@ -219,8 +254,17 @@ def register(request: Request, creds: RegisterCredentials):
             "bonus_points_granted": False
         }
         
-        # Insert user via admin to bypass constraints if needed on registration
-        supabase_admin.table("users").insert(user_data).execute()
+        # Insert user via admin to bypass constraints if needed on registration.
+        # If the profile can't be created, remove the Supabase account again so the
+        # person can simply retry (otherwise they'd be stuck with "already exists").
+        try:
+            supabase_admin.table("users").insert(user_data).execute()
+        except Exception as profile_err:
+            try:
+                supabase_admin.auth.admin.delete_user(user.id)
+            except Exception as cleanup_err:
+                print(f"Registration cleanup warning: {cleanup_err}")
+            raise profile_err
         
         # 4. Handle Referral Tracking if they used a code
         if referred_by_id:
@@ -359,9 +403,17 @@ def login(request: Request, creds: LoginCredentials):
         })
         if not auth_response.session:
              raise Exception("Invalid credentials")
-        return TokenResponse(access_token=auth_response.session.access_token)
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid login credentials")
+
+    user = auth_response.user or auth_response.session.user
+    meta = getattr(user, "user_metadata", None) or {}
+    member_id = _ensure_profile(str(user.id), user.email or clean_email, meta.get("full_name", ""))
+    if member_id != str(user.id):
+        # Profile is stored under a different id than the Supabase account: use a backend
+        # token for that member so every screen finds the right profile.
+        return TokenResponse(access_token=issue_app_token(member_id, user.email or clean_email))
+    return TokenResponse(access_token=auth_response.session.access_token)
 
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordRequest):
@@ -370,7 +422,10 @@ def forgot_password(req: ForgotPasswordRequest):
         raise HTTPException(status_code=400, detail="Email address is required")
         
     try:
-        supabase_anon.auth.reset_password_for_email(email)
+        # The link opens the "Set a new password" page on the admin site, which works
+        # on any phone or computer (the app itself has no reset screen).
+        redirect_to = f"{str(settings.FRONTEND_URL).rstrip('/')}/reset-password"
+        supabase_anon.auth.reset_password_for_email(email, {"redirect_to": redirect_to})
         return {"success": True, "message": "Password reset instructions sent to your email address."}
     except Exception as e:
         print("Forgot password error:", e)
@@ -380,6 +435,9 @@ def forgot_password(req: ForgotPasswordRequest):
 def get_me(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
     resp = supabase_admin.table("users").select("*").eq("id", user_id).execute()
+    if not resp.data and current_user.get("email"):
+        _ensure_profile(user_id, current_user.get("email"), (current_user.get("user_metadata") or {}).get("full_name", ""))
+        resp = supabase_admin.table("users").select("*").eq("id", user_id).execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
     me = dict(resp.data[0])
