@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from typing import Optional
 from slowapi import Limiter
@@ -16,6 +16,7 @@ from app.services.email_service import EmailService
 from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile
 from app.services.invite_service import link_new_member
+from app.services.notify_service import PREF_KEYS, prefs_for
 import random
 import string
 import time
@@ -139,10 +140,10 @@ def social_login(creds: SocialLoginRequest):
             "access_token": creds.access_token,
             "nonce": creds.raw_nonce
         })
-        
+
         session = auth_response.session
         user = auth_response.user
-        
+
         if session and user:
             user_db = supabase_admin.table("users").select("*").eq("id", user.id).execute()
             if not user_db.data:
@@ -221,7 +222,7 @@ def register(request: Request, creds: RegisterCredentials):
     try:
         if not creds.mobile:
              raise HTTPException(status_code=400, detail="Mobile number is required for SMS auth")
-             
+
         # 1. Sign up with Supabase Auth bypassing Rate Limits (Admin API)
         # Bypasses the 3 emails/hour GoTrue limits
         try:
@@ -238,13 +239,13 @@ def register(request: Request, creds: RegisterCredentials):
             if "already exists" in str(create_err).lower():
                 raise HTTPException(status_code=400, detail="An account with this email already exists.")
             raise create_err
-        
+
         if not user:
             raise HTTPException(status_code=400, detail="Signup failed")
-        
+
         # 2. Create public.users profile record
         unique_ref_code = generate_referral_code()
-        
+
         user_data = {
             "id": user.id, # Link directly to the Auth UUID
             "full_name": creds.full_name,
@@ -254,7 +255,7 @@ def register(request: Request, creds: RegisterCredentials):
             "total_points": 0,
             "bonus_points_granted": False
         }
-        
+
         # Insert user via admin to bypass constraints if needed on registration.
         # If the profile can't be created, remove the Supabase account again so the
         # person can simply retry (otherwise they'd be stuck with "already exists").
@@ -266,7 +267,7 @@ def register(request: Request, creds: RegisterCredentials):
             except Exception as cleanup_err:
                 print(f"Registration cleanup warning: {cleanup_err}")
             raise profile_err
-        
+
         # 3. Link to the member whose code (or invite link) they joined with
         if creds.referral_code:
             link_new_member(user.id, creds.referral_code, creds.full_name, email=creds.email, mobile=creds.mobile)
@@ -275,7 +276,7 @@ def register(request: Request, creds: RegisterCredentials):
             SmsService.send_otp(creds.mobile)
         except Exception as otp_err:
             print(f"SMS OTP trigger skipped/error: {otp_err}")
-        
+
         # 6. Award 100 pt Signup Bonus
         try:
             PointsService.award_points(
@@ -287,7 +288,7 @@ def register(request: Request, creds: RegisterCredentials):
             supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user.id).execute()
         except Exception as pts_err:
             print(f"Points award warning: {pts_err}")
-        
+
         return TokenResponse(access_token="pending_verification")
 
     except HTTPException as e:
@@ -367,7 +368,7 @@ def forgot_password(req: ForgotPasswordRequest):
     email = req.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email address is required")
-        
+
     try:
         # The link opens the "Set a new password" page on the admin site, which works
         # on any phone or computer (the app itself has no reset screen).
@@ -398,9 +399,9 @@ def get_me(current_user: dict = Depends(get_current_user)):
 @router.put("/profile")
 def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
-    
+
     update_data = {k: v for k, v in profile.dict(exclude_unset=True).items()}
-    
+
     if update_data:
          # Automatically mark profile as completed when profile details are saved
          update_data["profile_complete"] = True
@@ -425,3 +426,19 @@ def delete_account(current_user: dict = Depends(get_current_user)):
         return {"success": True, "message": "Account deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to delete account: {str(e)}")
+
+
+@router.get("/notification-prefs")
+def get_notification_prefs(current_user: dict = Depends(get_current_user)):
+    """Which phone alerts the member wants: {points, referrals, rewards, events, expiry, loan}."""
+    rows = supabase_admin.table("users").select("notification_prefs").eq("id", current_user.get("sub")).execute().data
+    return prefs_for(rows[0] if rows else {})
+
+
+@router.put("/notification-prefs")
+def update_notification_prefs(prefs: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    clean = {k: bool(v) for k, v in prefs.items() if k in PREF_KEYS}
+    rows = supabase_admin.table("users").select("notification_prefs").eq("id", current_user.get("sub")).execute().data
+    merged = {**((rows[0].get("notification_prefs") or {}) if rows else {}), **clean}
+    supabase_admin.table("users").update({"notification_prefs": merged}).eq("id", current_user.get("sub")).execute()
+    return prefs_for({"notification_prefs": merged})

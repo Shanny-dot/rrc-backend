@@ -1,0 +1,27 @@
+name: Daily member alerts
+
+# Each morning (about 8am Sydney time): event reminders for tomorrow, birthday and loan
+# anniversary bonuses, yearly loan check-ins and points-expiry alerts. The backend logs every
+# alert, so a retry or a manual run never sends or pays anything twice.
+on:
+  schedule:
+    - cron: "0 21 * * *"   # 21:00 UTC = 7am AEST / 8am AEDT
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Run the daily job (retries while the server wakes up)
+        env:
+          JOB_SECRET: ${{ secrets.JOB_SECRET }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 120 -X POST -H "X-Job-Key: $JOB_SECRET" \
+                 https://rrc-backend-1dmv.onrender.com/api/v1/jobs/daily; then
+              echo; exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 30s"; sleep 30
+          done
+          exit 1

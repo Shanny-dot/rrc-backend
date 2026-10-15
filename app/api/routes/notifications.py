@@ -14,6 +14,9 @@ REFERRAL_STAGE_TEXT = {
     "registered": "{name} joined Reliance Rewards.",
 }
 
+LOGGED_KINDS = {"loan_checkin": "loan", "points_expiring": "points", "event_thanks": "event"}
+
+
 def _iso(ts):
     return ts.isoformat() if ts else None
 
@@ -68,6 +71,16 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
         if now <= start <= now + datetime.timedelta(hours=48):
             items.append({"id": f"evt-{v['id']}", "kind": "event", "title": f"Coming up: {ev.get('title')}",
                           "body": ev.get("location") or "", "at": _iso(now - datetime.timedelta(minutes=1))})
+
+    # Alerts from the daily job and staff (loan check-ins, expiry warnings, event thank-yous).
+    # Bonuses and expiries already appear above as points activity.
+    logged = supabase_admin.table("notification_log").select("id, kind, title, body, created_at") \
+        .eq("user_id", user_id).execute().data or []
+    for n in logged:
+        kind = LOGGED_KINDS.get(n.get("kind"))
+        if kind:
+            items.append({"id": f"log-{n['id']}", "kind": kind, "type": n["kind"], "title": n.get("title") or "",
+                          "body": n.get("body") or "", "at": n.get("created_at")})
 
     items.sort(key=lambda i: str(i.get("at") or ""), reverse=True)
     return items[:50]

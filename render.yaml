@@ -29,3 +29,5 @@ services:
         sync: false
       - key: GUNI_SMS_SENDER
         sync: false
+      - key: JOB_SECRET
+        sync: false

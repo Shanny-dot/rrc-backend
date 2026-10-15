@@ -7,7 +7,8 @@ from app.schemas.reward import RewardCreate, RewardUpdate, RewardInDB
 from app.schemas.redemption import RedemptionRejectRequest
 from app.services.points_service import PointsService
 from app.services.email_service import EmailService
-from app.services.push_service import PushService
+from app.services import notify_service
+from app.services.bonus_service import BonusService
 from app.schemas.referral import ReferralStageUpdate
 from app.services.program_service import get_int_setting
 import datetime
@@ -76,7 +77,7 @@ def delete_user(id: str, admin: dict = Depends(get_current_admin)):
         supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
     except Exception as e:
         print("DB deleted_at update note:", e)
-        
+
     dmap = load_deleted_users_map()
     dmap[id] = now_iso
     save_deleted_users_map(dmap)
@@ -88,7 +89,7 @@ def restore_user(id: str, admin: dict = Depends(get_current_admin)):
         supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
     except Exception as e:
         print("DB deleted_at restore note:", e)
-        
+
     dmap = load_deleted_users_map()
     if id in dmap:
         del dmap[id]
@@ -101,9 +102,15 @@ def update_user_profile(id: str, data: dict = Body(...), admin: dict = Depends(g
     ALLOWED_FIELDS = {
         "full_name", "mobile", "gender", "dob", "industry",
         "home_ownership", "home_ownership_status", "annual_income", "street_address",
-        "city", "state", "postal_code", "role"
+        "city", "state", "postal_code", "role", "loan_settled_on"
     }
     update_data = {k: v for k, v in data.items() if k in ALLOWED_FIELDS}
+    if "loan_settled_on" in update_data:
+        value = (update_data["loan_settled_on"] or "").strip()
+        try:
+            update_data["loan_settled_on"] = datetime.date.fromisoformat(value).isoformat() if value else None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Loan settlement date must be YYYY-MM-DD.")
     if not update_data:
         raise HTTPException(status_code=400, detail="No valid fields to update")
     resp = supabase_admin.table("users").update(update_data).eq("id", id).execute()
@@ -117,12 +124,12 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
     user_resp = supabase_admin.table("users").select("total_points").eq("id", id).execute()
     if not user_resp.data:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     current_points = user_resp.data[0].get("total_points", 0) or 0
     diff = new_points - current_points
-    
+
     resp = supabase_admin.table("users").update({"total_points": new_points}).eq("id", id).execute()
-    
+
     if diff != 0:
         # Logged to the same table the app reads, with a signed amount, so members see it in Recent Activity.
         try:
@@ -134,6 +141,8 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
             }).execute()
         except Exception as e:
             print("Transaction log warning:", e)
+        if diff > 0:
+            notify_service.push(id, "points", f"+{diff:,} points added", (reason or "Points added by Reliance").strip())
 
     return {"message": f"Points updated to {new_points}", "data": resp.data[0]}
 
@@ -205,35 +214,33 @@ def approve_redemption(id: str):
     red_resp = supabase_admin.table("redemptions").select("*, users(email, fcm_token), rewards(title)").eq("id", id).single().execute()
     if not red_resp.data:
          raise HTTPException(status_code=404, detail="Redemption not found")
-         
+
     redemption = red_resp.data
     if redemption["status"] != "pending":
          raise HTTPException(status_code=400, detail="Redemption is not pending")
-         
+
     # 1. Update Status
     now = datetime.datetime.utcnow().isoformat()
     supabase_admin.table("redemptions").update({"status": "approved", "actioned_at": now}).eq("id", id).execute()
-    
+
     # 2. Points were already deducted on request. Log a separate success context if needed, but standard is fine.
-    
+
     # 3. Notification
     user_email = redemption["users"]["email"] if redemption.get("users") else None
     if user_email:
          # Need remaining balance:
          user_resp = supabase_admin.table("users").select("total_points").eq("id", redemption["user_id"]).single().execute()
          bal = user_resp.data["total_points"] if user_resp.data else 0
-         
+
          EmailService.send_redemption_approved(
               to_email=user_email,
               reward_name=redemption["rewards"]["title"],
               points_used=redemption["points_used"],
               remaining_balance=bal
          )
-         
-    fcm_token = redemption["users"]["fcm_token"] if redemption.get("users") else None
-    if fcm_token:
-         PushService.send_push_notification(fcm_token, "Reward Approved!", f"Your request for {redemption['rewards']['title']} was approved.")
-         
+
+    notify_service.push(redemption["user_id"], "reward", "Reward approved",
+                        f"We're preparing your {redemption['rewards']['title']}.", {"redemption_id": id})
     return {"message": "Redemption approved"}
 
 @router.put("/redemptions/{id}/reject")
@@ -241,11 +248,11 @@ def reject_redemption(id: str, req: RedemptionRejectRequest):
     red_resp = supabase_admin.table("redemptions").select("*, users(email, fcm_token), rewards(title)").eq("id", id).single().execute()
     if not red_resp.data:
          raise HTTPException(status_code=404, detail="Redemption not found")
-         
+
     redemption = red_resp.data
     if redemption["status"] != "pending":
          raise HTTPException(status_code=400, detail="Redemption is not pending")
-         
+
     # 1. Update Status
     now = datetime.datetime.utcnow().isoformat()
     supabase_admin.table("redemptions").update({
@@ -253,7 +260,7 @@ def reject_redemption(id: str, req: RedemptionRejectRequest):
         "admin_note": req.admin_note,
         "actioned_at": now
     }).eq("id", id).execute()
-    
+
     # 2. Refund Points
     PointsService.award_points(
          user_id=redemption["user_id"],
@@ -261,7 +268,7 @@ def reject_redemption(id: str, req: RedemptionRejectRequest):
          type="redemption_refund",
          description=f"Refund for rejected redemption: {redemption['rewards']['title']}"
     )
-    
+
     # 3. Increase Stock back
     reward_id = redemption["reward_id"]
     rew_resp = supabase_admin.table("rewards").select("stock").eq("id", reward_id).single().execute()
@@ -273,17 +280,16 @@ def reject_redemption(id: str, req: RedemptionRejectRequest):
     if user_email:
          user_resp = supabase_admin.table("users").select("total_points").eq("id", redemption["user_id"]).single().execute()
          bal = user_resp.data["total_points"] if user_resp.data else 0
-         
+
          EmailService.send_redemption_rejected(
               to_email=user_email,
               reward_name=redemption["rewards"]["title"],
               refund_note=req.admin_note,
               remaining_balance=bal
          )
-         
-    fcm_token = redemption["users"]["fcm_token"] if redemption.get("users") else None
-    if fcm_token:
-         PushService.send_push_notification(fcm_token, "Reward Rejected", f"Your request for {redemption['rewards']['title']} was refunded.")
+
+    notify_service.push(redemption["user_id"], "reward", f"{redemption['rewards']['title']} couldn't be processed",
+                        f"Your {redemption['points_used']} points have been refunded.", {"redemption_id": id})
 
     return {"message": "Redemption rejected"}
 
@@ -293,16 +299,16 @@ def scan_qr(req: QRScanRequest):
     rsvp_resp = supabase_admin.table("event_rsvps").select("*, events(points_for_attending, points_for_referring)").eq("qr_token", req.qr_token).single().execute()
     if not rsvp_resp.data:
          raise HTTPException(status_code=404, detail="Invalid QR code: RSVP not found")
-         
+
     rsvp = rsvp_resp.data
-    
+
     if rsvp["attended"]:
          raise HTTPException(status_code=400, detail="QR code already scanned and attended")
-         
+
     # 2. Mark as Attended and Award Points to Attendee
     now = datetime.datetime.utcnow().isoformat()
     supabase_admin.table("event_rsvps").update({"attended": True, "attended_at": now, "points_awarded": True}).eq("id", rsvp["id"]).execute()
-    
+
     points_to_award = rsvp["events"]["points_for_attending"]
     if points_to_award > 0:
          PointsService.award_points(
@@ -311,7 +317,8 @@ def scan_qr(req: QRScanRequest):
               type="event_attend",
               description=f"Attended event {rsvp['event_id']}"
          )
-         
+         notify_service.push(rsvp["user_id"], "points", f"+{points_to_award:,} points added", "Thanks for coming to the event!")
+
     # 3. Check if they were invited as a guest (award referring points to inviter)
     guest_resp = supabase_admin.table("event_guests").select("*").eq("rsvp_id", rsvp["id"]).eq("points_awarded_to_inviter", False).execute()
     if guest_resp.data:
@@ -324,6 +331,8 @@ def scan_qr(req: QRScanRequest):
                         type="event_guest",
                         description=f"Your invited guest attended event {rsvp['event_id']}"
                    )
+                   notify_service.push(guest["inviter_user_id"], "points", f"+{inviter_points:,} points added",
+                                       f"{guest.get('guest_name') or 'Your guest'} came to the event.")
               supabase_admin.table("event_guests").update({"attended": True, "points_awarded_to_inviter": True}).eq("id", guest["id"]).execute()
 
     return {"message": "QR Scan Successful, Points Awarded"}
@@ -359,12 +368,17 @@ def mark_redemption_sent(id: str, body: dict = Body(default={})):
     user = redemption.get("users") or {}
     if user.get("email"):
         EmailService.send_redemption_sent(to_email=user["email"], reward_name=reward_title, note=note)
-    if user.get("fcm_token"):
-        PushService.send_push_notification(user["fcm_token"], "Your reward is on its way", f"{reward_title} has been sent.")
+    notify_service.push(redemption["user_id"], "reward", "Your reward is on its way",
+                        f"{reward_title} has been sent. Check your email.", {"redemption_id": id})
     return {"message": "Marked as sent"}
 
 
 REFERRAL_STAGES = ["invited", "contacted", "loan_in_progress", "settled", "rewarded", "closed"]
+REFERRAL_PUSH_TEXT = {
+    "contacted": "Reliance has contacted {name}.",
+    "loan_in_progress": "{name}'s loan is in progress.",
+    "settled": "{name}'s loan has settled. Your points are on the way!",
+}
 
 @router.get("/referrals")
 def admin_list_referrals():
@@ -405,6 +419,17 @@ def update_referral_stage(id: str, body: ReferralStageUpdate):
         update["points_earned"] = points
 
     resp = supabase_admin.table("referrals").update(update).eq("id", id).execute()
+
+    if status != (ref.get("status") or ""):
+        friend = ref.get("referred_name") or "Your friend"
+        if status == "rewarded" and update.get("points_earned"):
+            title, body = f"+{update['points_earned']:,} points added", f"Thanks for referring {friend}!"
+        else:
+            title, body = "Referral update", REFERRAL_PUSH_TEXT.get(status, "").format(name=friend)
+        if body:
+            notify_service.push(ref["referrer_id"], "points" if status == "rewarded" else "referral", title, body, {"referral_id": id})
+        if status in ("settled", "rewarded"):
+            BonusService.first_referral(ref["referrer_id"], friend)
     return resp.data[0] if resp.data else update
 
 # ── Member feedback from the app ───────────────────────────────────────────
@@ -450,3 +475,48 @@ def update_broker_request(id: str, status: str = Body(None, embed=True), staff_n
     if not resp.data:
         raise HTTPException(status_code=404, detail="Request not found")
     return resp.data[0]
+
+
+# ── Thank-you after an event ───────────────────────────────────────────────
+@router.post("/events/{id}/thank-you")
+def send_event_thank_you(id: str, message: str = Body(..., embed=True), slides_url: str = Body(None, embed=True),
+                         recording_url: str = Body(None, embed=True), extra_url: str = Body(None, embed=True)):
+    """Sends everyone who checked in a thank-you: phone alert, in-app update and (when email
+    is set up) an email with the key points, links and a Talk to my broker button."""
+    from app.services.email_service import _EMAIL_ENABLED
+    from app.services.program_service import get_setting
+
+    message = (message or "").strip()
+    if len(message) < 5:
+        raise HTTPException(status_code=400, detail="Please write a short message with the key points.")
+    links = []
+    for label, url in (("Slides", slides_url), ("Recording", recording_url), ("More information", extra_url)):
+        url = (url or "").strip()
+        if url:
+            if not url.startswith(("https://", "http://")):
+                raise HTTPException(status_code=400, detail=f"{label} link must start with https://")
+            links.append((label, url))
+
+    ev = supabase_admin.table("events").select("id, title").eq("id", id).execute().data
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found")
+    title = ev[0]["title"]
+    rsvps = supabase_admin.table("event_rsvps").select("user_id, attended, cancelled, users(full_name, email)") \
+        .eq("event_id", id).execute().data or []
+    attendees = [r for r in rsvps if r.get("attended") and not r.get("cancelled")]
+    if not attendees:
+        raise HTTPException(status_code=400, detail="Nobody has been checked in to this event yet.")
+
+    broker_url = get_setting("contact_booking_url") or (f"mailto:{get_setting('contact_email')}" if get_setting("contact_email") else None)
+    body = message + "".join(f"\n{label}: {url}" for label, url in links)
+    notified = emailed = 0
+    for r in attendees:
+        if notify_service.notify_once(r["user_id"], "event_thanks", str(id), f"Thanks for coming to {title}", body, {"event_id": id}):
+            notified += 1
+            user = r.get("users") or {}
+            if user.get("email") and EmailService.send_event_thank_you(
+                    user["email"], (user.get("full_name") or "").split(" ")[0], title, message, links,
+                    broker_url, get_setting("contact_name")):
+                emailed += 1
+    supabase_admin.table("events").update({"thank_you_sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}).eq("id", id).execute()
+    return {"attendees": len(attendees), "notified": notified, "emailed": emailed, "email_enabled": _EMAIL_ENABLED}

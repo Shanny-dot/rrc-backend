@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # Guni SMS App Token used to send mobile OTPs. Empty = SMS off.
     GUNI_SMS_API_KEY: str = ""
     GUNI_SMS_SENDER: str = "Reliiance"
+    # Shared secret the daily GitHub Actions job sends in X-Job-Key. Empty = daily job off.
+    JOB_SECRET: str = ""
 
     class Config:
         env_file = ".env"

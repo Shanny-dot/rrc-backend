@@ -5,6 +5,7 @@ from app.core.auth_middleware import get_current_user
 from app.schemas.event import EventInDB, RSVPInDB, GuestCreate
 from app.services.qr_service import QRService
 from app.services.email_service import EmailService
+from app.services import notify_service
 import uuid
 
 router = APIRouter()
@@ -47,7 +48,7 @@ def get_event(id: str):
 @router.post("/{id}/rsvp", response_model=RSVPInDB)
 def rsvp_event(id: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
-    
+
     # 1. Check if event exists
     event_resp = supabase_admin.table("events").select("*").eq("id", id).single().execute()
     if not event_resp.data:
@@ -64,25 +65,25 @@ def rsvp_event(id: str, current_user: dict = Depends(get_current_user)):
                    .eq("id", existing.data[0]["id"]).execute()
               return restored.data[0]
          raise HTTPException(status_code=400, detail="You have already RSVP'd to this event")
-         
+
     # 3. Generate Unique QR Token
     qr_token = f"evt_{uuid.uuid4().hex[:16]}"
-    
+
     # 4. Create RSVP
     rsvp_data = {
          "event_id": id,
          "user_id": user_id,
          "qr_token": qr_token,
     }
-    
+
     rsvp_resp = supabase_admin.table("event_rsvps").insert(rsvp_data).execute()
     if not rsvp_resp.data:
          raise HTTPException(status_code=500, detail="Failed to RSVP")
-         
+
     # 5. Generate QR Image & Send Email
     user_resp = supabase_admin.table("users").select("email").eq("id", user_id).single().execute()
     user_email = user_resp.data["email"] if user_resp.data else None
-    
+
     if user_email:
          qr_base64 = QRService.generate_qr_base64(qr_token)
          # Format date for email simply
@@ -94,22 +95,22 @@ def rsvp_event(id: str, current_user: dict = Depends(get_current_user)):
               event_location=event["location"],
               qr_base64=qr_base64
          )
-         
+
     return rsvp_resp.data[0]
 
 @router.post("/{id}/invite-guests")
 def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
-    
+
     # 1. Get Event and Inviter Details
     event_resp = supabase_admin.table("events").select("title").eq("id", id).single().execute()
     if not event_resp.data:
          raise HTTPException(status_code=404, detail="Event not found")
     event_title = event_resp.data["title"]
-    
+
     user_resp = supabase_admin.table("users").select("full_name").eq("id", user_id).single().execute()
     inviter_name = user_resp.data["full_name"] if user_resp.data else "A Friend"
-    
+
     # 2. Check if user RSVP'd
     rsvp_resp = supabase_admin.table("event_rsvps").select("id").eq("event_id", id).eq("user_id", user_id).execute()
     if not rsvp_resp.data:
@@ -124,7 +125,7 @@ def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depen
         rsvp_id = new_rsvp.data[0]["id"]
     else:
         rsvp_id = rsvp_resp.data[0]["id"]
-    
+
     # 3. Insert Guests and send emails
     inserted_guests = []
     for guest in guests:
@@ -138,7 +139,7 @@ def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depen
          res = supabase_admin.table("event_guests").insert(guest_data).execute()
          if res.data:
              inserted_guests.append(res.data[0])
-             
+
              # Send Invite Email if email exists
              if guest.guest_email:
                   EmailService.send_guest_invite(
@@ -146,14 +147,14 @@ def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depen
                        inviter_name=inviter_name,
                        event_name=event_title
                   )
-                  
+
     return {"message": f"Successfully invited {len(inserted_guests)} guests", "guests": inserted_guests}
 
 @router.post("/{id}/scan-attendance")
 def scan_attendance(id: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
     user_email = current_user.get("email")
-    
+
     # 1. Check Event
     event_resp = supabase_admin.table("events").select("*").eq("id", id).single().execute()
     if not event_resp.data:
@@ -186,20 +187,21 @@ def scan_attendance(id: str, current_user: dict = Depends(get_current_user)):
         rsvp = new_rsvp.data[0]
     else:
         rsvp = rsvp_resp.data[0]
-        
+
     if rsvp["attended"]:
         raise HTTPException(status_code=400, detail="You have already claimed points for this event.")
-        
+
     # 3. Mark Attended
     import datetime
     now = datetime.datetime.utcnow().isoformat()
     supabase_admin.table("event_rsvps").update({"attended": True, "attended_at": now, "points_awarded": True}).eq("id", rsvp["id"]).execute()
-    
+
     # 4. Award User Attendance Points
     from app.services.points_service import PointsService
     if event.get("points_for_attending", 0) > 0:
         PointsService.award_points(user_id=user_id, points=event["points_for_attending"], type="event_attend", description=f"Attended {event['title']}")
-        
+        notify_service.push(user_id, "points", f"+{event['points_for_attending']:,} points added", f"Thanks for coming to {event['title']}!")
+
     # 5. Check if they were invited by someone else to THIS specific event
     guest_resp = supabase_admin.table("event_guests").select("*").eq("guest_email", user_email).eq("points_awarded_to_inviter", False).execute()
     if guest_resp.data:
@@ -209,9 +211,11 @@ def scan_attendance(id: str, current_user: dict = Depends(get_current_user)):
                 # Award Inviter Points
                 if event.get("points_for_referring", 0) > 0:
                     PointsService.award_points(user_id=guest["inviter_user_id"], points=event["points_for_referring"], type="event_guest", description=f"Your invited guest attended {event['title']}")
+                    notify_service.push(guest["inviter_user_id"], "points", f"+{event['points_for_referring']:,} points added",
+                                        f"{guest.get('guest_name') or 'Your guest'} came to {event['title']}.")
                 supabase_admin.table("event_guests").update({"attended": True, "points_awarded_to_inviter": True}).eq("id", guest["id"]).execute()
                 break # Only process one inviter
-                
+
     return {"message": "Attendance confirmed! Points awarded."}
 
 

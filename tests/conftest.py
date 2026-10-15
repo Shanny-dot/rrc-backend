@@ -16,6 +16,7 @@ os.environ.update({
     "JWT_SECRET": "test-secret-0123456789-0123456789-abcdef",
     "ADMIN_EMAIL": "admin@rrc.com",
     "FRONTEND_URL": "https://rrc-admin.vercel.app",
+    "JOB_SECRET": "test-job-key",
 })
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

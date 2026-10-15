@@ -61,3 +61,22 @@ def create_request(request: Request, body: BrokerRequestCreate, current_user: di
         member = supabase_admin.table("users").select("full_name, email, mobile").eq("id", user_id).execute().data or [{}]
         EmailService.send_staff_broker_request(settings.ADMIN_EMAIL, member[0], note)
     return {"success": True, "id": resp.data[0]["id"]}
+
+
+@router.get("/checkin")
+def loan_checkin_status(current_user: dict = Depends(get_current_user)):
+    """Whether to show the yearly "Is your loan still competitive?" card: a check-in was sent
+    in the last 45 days and the member hasn't asked for a review since."""
+    user_id = current_user.get("sub")
+    logs = supabase_admin.table("notification_log").select("created_at, body").eq("user_id", user_id) \
+        .eq("kind", "loan_checkin").order("created_at", desc=True).execute().data or []
+    if not logs:
+        return {"due": False}
+    sent_at = str(logs[0]["created_at"])
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=45)).isoformat()
+    if sent_at < cutoff:
+        return {"due": False}
+    reviews = supabase_admin.table("loan_reviews").select("created_at, note").eq("user_id", user_id).execute().data or []
+    if any(str(r.get("created_at")) >= sent_at and (r.get("note") or "").startswith("Loan review") for r in reviews):
+        return {"due": False, "requested": True}
+    return {"due": True, "message": logs[0].get("body")}

@@ -256,3 +256,36 @@ class EmailService:
             })
         except Exception as e:
             print(f"Failed to send email: {e}")
+
+    @staticmethod
+    def send_event_thank_you(to_email: str, first_name: str, event_title: str, message: str,
+                             links: list, broker_url: str = None, broker_name: str = None):
+        """Thank-you after an event: key points, slides/recording links and a Talk to my broker button."""
+        if not _EMAIL_ENABLED:
+            return False
+        para = "".join(f"<p>{html.escape(line)}</p>" for line in message.split("\n") if line.strip())
+        link_html = "".join(
+            f'<p><a href="{html.escape(url)}" style="color:#FAB95B;font-weight:bold">{html.escape(label)} →</a></p>'
+            for label, url in links)
+        broker_html = (
+            f'<p style="margin-top:28px"><a href="{html.escape(broker_url)}" '
+            f'style="background:#FAB95B;color:#0A0A0A;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:bold">'
+            f'Talk to my broker</a></p><p style="color:#777;font-size:13px">{html.escape(broker_name or "")}</p>'
+        ) if broker_url else ""
+        html_content = f"""
+        <h2>Thanks for coming to {html.escape(event_title)}, {html.escape(first_name or 'there')}!</h2>
+        {para}
+        {link_html}
+        {broker_html}
+        """
+        try:
+            resend.Emails.send({
+                "from": FROM_EMAIL,
+                "to": to_email,
+                "subject": f"Thanks for coming to {event_title}",
+                "html": html_content,
+            })
+            return True
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+            return False

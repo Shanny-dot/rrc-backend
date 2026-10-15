@@ -426,3 +426,150 @@ def test_book_a_time_reaches_staff(env):
     assert items[0]["status"] == "new" and items[0]["users"]["email"] == "manoj@example.com"
     r = c.put(f"/api/v1/admin/broker-requests/{items[0]['id']}", headers=env["admin"], json={"status": "contacted", "staff_note": "Called Tue"})
     assert r.status_code == 200 and r.json()["status"] == "contacted" and r.json()["staff_note"] == "Called Tue"
+
+
+# ── Phase 3: alerts, bonuses, loan check-ins, thank-yous ───────────────────
+def _setting(db, key, value):
+    rows = db.tables["app_content"]
+    row = next((r for r in rows if r["key"] == key), None)
+    if row:
+        row["value"] = value
+    else:
+        rows.append({"key": key, "value": value})
+
+
+def _capture_push(monkeypatch):
+    import app.services.notify_service as ns
+    sent = []
+
+    def fake_send(token, title, body, data=None):
+        sent.append((token, title, body, data))
+        return "sent"
+
+    monkeypatch.setattr(ns.PushService, "send_push_notification", staticmethod(fake_send))
+    return sent
+
+
+def test_notification_settings_mute_alerts(env, monkeypatch):
+    c, db = env["c"], env["db"]
+    sent = _capture_push(monkeypatch)
+    user(db, MEMBER_ID)["fcm_token"] = "tok-manoj"
+    assert c.get("/api/v1/auth/notification-prefs", headers=env["member"]).json() == \
+        {"points": True, "referrals": True, "rewards": True, "events": True, "expiry": True, "loan": True}
+    r = c.put("/api/v1/auth/notification-prefs", headers=env["member"], json={"points": False, "bogus": True})
+    assert r.json()["points"] is False and "bogus" not in r.json()
+
+    c.put(f"/api/v1/admin/users/{MEMBER_ID}/points", headers=env["admin"], json={"new_points": user(db, MEMBER_ID)["total_points"] + 10})
+    assert sent == []  # points alerts muted
+    c.put("/api/v1/auth/notification-prefs", headers=env["member"], json={"points": True})
+    c.put(f"/api/v1/admin/users/{MEMBER_ID}/points", headers=env["admin"],
+          json={"new_points": user(db, MEMBER_ID)["total_points"] + 25, "reason": "Thanks!"})
+    assert sent[-1][:3] == ("tok-manoj", "+25 points added", "Thanks!")
+
+
+def test_referral_progress_alert_and_first_referral_bonus(env, monkeypatch):
+    c, db = env["c"], env["db"]
+    sent = _capture_push(monkeypatch)
+    user(db, FRIEND_ID)["fcm_token"] = "tok-old"
+    _setting(db, "bonus_first_referral_points", "250")
+    refs = []
+    for i, name in enumerate(("Ann", "Ben")):
+        rid = f"44444444-0000-4000-8000-00000000010{i}"
+        db.tables["referrals"].append({"id": rid, "referrer_id": FRIEND_ID, "referred_name": name, "status": "invited", "points_earned": 0})
+        refs.append(rid)
+    before = user(db, FRIEND_ID)["total_points"]
+    c.put(f"/api/v1/admin/referrals/{refs[0]}/stage", headers=env["admin"], json={"status": "contacted"})
+    assert sent[-1][1:3] == ("Referral update", "Reliance has contacted Ann.")
+    c.put(f"/api/v1/admin/referrals/{refs[0]}/stage", headers=env["admin"], json={"status": "settled"})
+    c.put(f"/api/v1/admin/referrals/{refs[1]}/stage", headers=env["admin"], json={"status": "settled"})
+    bonuses = [t for t in tx(db, FRIEND_ID) if t["type"] == "bonus"]
+    assert len(bonuses) == 1 and bonuses[0]["points"] == 250
+    assert user(db, FRIEND_ID)["total_points"] == before + 250
+
+
+def test_daily_job_reminders_birthdays_and_loan_checkin(env, monkeypatch):
+    import datetime
+    from app.api.routes import jobs
+    c, db = env["c"], env["db"]
+    sent = _capture_push(monkeypatch)
+    assert c.post("/api/v1/jobs/daily").status_code == 403
+    assert c.post("/api/v1/jobs/daily", headers={"X-Job-Key": "wrong"}).status_code == 403
+
+    today = jobs._today()
+    leap_day = today.month == 2 and today.day == 29
+    _setting(db, "bonus_birthday_points", "50")
+    member = user(db, MEMBER_ID)
+    member.update({
+        "fcm_token": "tok-manoj",
+        "dob": "1985-02-28" if leap_day else today.replace(year=1985).isoformat(),
+        "loan_settled_on": None if leap_day else today.replace(year=today.year - 2).isoformat(),
+    })
+    start = datetime.datetime.combine(today + datetime.timedelta(days=1), datetime.time(18, 30), tzinfo=jobs.PROGRAM_TZ)
+    ev = "11111111-0000-4000-8000-0000000000aa"
+    db.tables["events"].append({"id": ev, "title": "Investor Night", "location": "Parramatta",
+                                "event_date": start.isoformat(), "is_active": True})
+    db.tables["event_rsvps"].append({"id": "77777777-0000-4000-8000-0000000000aa", "event_id": ev,
+                                     "user_id": MEMBER_ID, "cancelled": False, "attended": False})
+    points_before = member["total_points"]
+
+    r = c.post("/api/v1/jobs/daily", headers={"X-Job-Key": "test-job-key"})
+    assert r.status_code == 200, r.text
+    summary = r.json()
+    assert summary["event_reminders"] == 1 and summary["birthday_bonuses"] == 1, summary
+    titles = [s[1] for s in sent]
+    assert "See you tomorrow: Investor Night" in titles and "Happy birthday! +50 points" in titles
+    assert member["total_points"] == points_before + 50
+    if member.get("loan_settled_on"):
+        assert summary["loan_checkins"] == 1 and "Is your loan still competitive?" in titles
+        assert c.get("/api/v1/broker/checkin", headers=env["member"]).json()["due"] is True
+        updates = c.get("/api/v1/notifications", headers=env["member"]).json()
+        assert any(u.get("type") == "loan_checkin" for u in updates)
+        c.post("/api/v1/broker/requests", headers=env["member"], json={"kind": "loan_review"})
+        assert c.get("/api/v1/broker/checkin", headers=env["member"]).json()["due"] is False
+
+    # A second run the same day sends and pays nothing again.
+    n = len(sent)
+    again = c.post("/api/v1/jobs/daily", headers={"X-Job-Key": "test-job-key"}).json()
+    assert again["event_reminders"] == 0 and again["birthday_bonuses"] == 0 and len(sent) == n
+    assert member["total_points"] == points_before + 50
+
+
+def test_points_expiry_uses_oldest_points_first():
+    import datetime
+    from app.api.routes import jobs
+
+    def ts(d):
+        return f"{d}T02:00:00+00:00"
+
+    history = [
+        {"type": "signup_bonus", "points": 100, "created_at": ts("2024-09-01")},   # older than 24 months
+        {"type": "referral", "points": 500, "created_at": ts("2024-11-01")},       # turns 24 months within 30 days
+        {"type": "event_attend", "points": 200, "created_at": ts("2026-01-01")},
+        {"type": "redemption", "points": -150, "created_at": ts("2025-02-01")},   # uses the oldest points first
+        {"type": "redemption_refund", "points": 50, "created_at": ts("2025-02-03")},
+    ]
+    # The 100 oldest points were spent, so nothing expires today; the 500 from Nov 2024 expire within 30 days.
+    assert jobs.expiry_amounts(history, balance=700, months=24, today=datetime.date(2026, 10, 15)) == (0, 500)
+    assert jobs.expiry_amounts(history, balance=700, months=24, today=datetime.date(2026, 11, 5)) == (500, 0)
+    assert jobs._add_months(datetime.date(2026, 3, 31), -1) == datetime.date(2026, 2, 28)
+
+
+def test_event_thank_you_reaches_attendees(env, monkeypatch):
+    c, db = env["c"], env["db"]
+    sent = _capture_push(monkeypatch)
+    user(db, MEMBER_ID)["fcm_token"] = "tok-manoj"
+    ev = "11111111-0000-4000-8000-000000000002"
+    db.tables["event_rsvps"].append({"id": "77777777-0000-4000-8000-0000000000bb", "event_id": ev, "user_id": MEMBER_ID,
+                                     "attended": True, "cancelled": False})
+    bad = c.post(f"/api/v1/admin/events/{ev}/thank-you", headers=env["admin"], json={"message": "Thanks all!", "slides_url": "ftp://x"})
+    assert bad.status_code == 400
+    r = c.post(f"/api/v1/admin/events/{ev}/thank-you", headers=env["admin"],
+               json={"message": "Great night. Key point: rates are moving.", "slides_url": "https://example.com/slides"})
+    assert r.status_code == 200, r.text
+    assert r.json()["notified"] == 1 and r.json()["email_enabled"] is False
+    assert sent[-1][1] == "Thanks for coming to Market Update"
+    update = next(u for u in c.get("/api/v1/notifications", headers=env["member"]).json() if u.get("type") == "event_thanks")
+    assert "Slides: https://example.com/slides" in update["body"]
+    # Sending again doesn't message the same people twice.
+    again = c.post(f"/api/v1/admin/events/{ev}/thank-you", headers=env["admin"], json={"message": "Thanks again all"})
+    assert again.json()["notified"] == 0
