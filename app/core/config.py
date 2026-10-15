@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     FROM_EMAIL: str
     FIREBASE_CREDENTIALS_JSON: str
     JWT_SECRET: str
-    ADMIN_EMAIL: str
+    # Staff address for feedback and broker-request emails. Empty = no staff emails.
+    ADMIN_EMAIL: str = ""
     FRONTEND_URL: HttpUrl
     # Comma-separated audiences accepted for Sign in with Apple tokens
     # (the iOS bundle ID, plus a Services ID if web sign-in is ever added).
