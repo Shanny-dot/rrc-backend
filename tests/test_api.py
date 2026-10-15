@@ -320,3 +320,29 @@ def test_mobile_otp_unknown_number_and_sms_off(env, monkeypatch):
     import app.services.sms_service as sms
     monkeypatch.setattr(sms, "_SMS_ENABLED", False)
     assert c.post("/api/v1/auth/resend-otp", json={"mobile": "+61412000111"}).status_code == 400
+
+
+# ── Help & contact settings ───────────────────────────────────────────────
+def test_help_and_contact_content(env):
+    import json
+    c = env["c"]
+    content = c.get("/api/v1/content").json()
+    faq = json.loads(content["help_faq"])
+    assert faq and all(i["q"] and i["a"] for i in faq)
+    assert content["terms_url"].startswith("https://") and "contact_phone" in content
+
+    # Staff edit the contact details and the questions; members see them straight away.
+    assert c.put("/api/v1/content/contact_phone", json={"value": "02 9000 0000"}).status_code in (401, 403)
+    assert c.put("/api/v1/content/contact_phone", headers=env["admin"], json={"value": "02 9000 0000"}).status_code == 200
+    new_faq = json.dumps([{"q": "Who do I call?", "a": "Your broker."}])
+    assert c.put("/api/v1/content/help_faq", headers=env["admin"], json={"value": new_faq}).status_code == 200
+    content = c.get("/api/v1/content").json()
+    assert content["contact_phone"] == "02 9000 0000" and json.loads(content["help_faq"])[0]["q"] == "Who do I call?"
+
+    # A broken list is refused rather than blanking the Help page.
+    bad = c.put("/api/v1/content/help_faq", headers=env["admin"], json={"value": json.dumps([{"q": "No answer"}])})
+    assert bad.status_code == 400
+    # Editing a migration-created setting keeps its label.
+    c.put("/api/v1/content/referral_points", headers=env["admin"], json={"value": "500"})
+    row = next(r for r in env["db"].tables["app_content"] if r["key"] == "referral_points")
+    assert row.get("label") != "referral_points"
