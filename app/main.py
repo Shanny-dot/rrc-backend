@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import HTTPException
-from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config
+from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback
 
 app = FastAPI(title="RRC Backend API")
 
@@ -65,6 +65,7 @@ app.include_router(content.router, prefix="/api/v1/content", tags=["Content"])
 app.include_router(tiers.router, prefix="/api/v1/tiers", tags=["tiers"])
 app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])
 app.include_router(app_config.router, prefix="/api/v1/app", tags=["app"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["feedback"])
 
 @app.get("/health")
 def health_check():

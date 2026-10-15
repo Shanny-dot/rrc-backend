@@ -1,14 +1,18 @@
 import re
 import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
+from slowapi import Limiter
+from app.core.client_ip import client_ip
 from app.core.supabase_client import supabase_admin
 from app.core.auth_middleware import get_current_user
 from app.schemas.referral import ReferralCreate, ReferralInDB, REFERRAL_CHANNELS
 from app.services.email_service import EmailService
-from app.services.program_service import get_setting, get_int_setting
+from app.services.program_service import get_int_setting
+from app.services import invite_service
 
 router = APIRouter()
+limiter = Limiter(key_func=client_ip)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Australian mobile: 04XXXXXXXX, 4XXXXXXXX or +614XXXXXXXX (spaces/dashes ignored)
@@ -85,7 +89,7 @@ def create_referral(referral: ReferralCreate, current_user: dict = Depends(get_c
             to_email=email,
             inviter_name=inviter.get("full_name") or "A friend",
             referral_code=inviter.get("referral_code"),
-            invite_link=get_setting("invite_link") or None,
+            invite_link=invite_service.personal_link(inviter.get("referral_code")) or None,
         )
     return resp.data[0]
 
@@ -109,6 +113,29 @@ def referral_summary(current_user: dict = Depends(get_current_user)):
         "points_earned": earned,
         "points_per_referral": get_int_setting("referral_points"),
         "referral_code": user[0].get("referral_code"),
-        "invite_link": get_setting("invite_link"),
+        "invite_link": invite_service.personal_link(user[0].get("referral_code")),
         "inviter_name": user[0].get("full_name"),
     }
+
+
+# ── Personal invite links (public: the friend isn't a member yet) ──────────
+@router.post("/invite/{code}")
+@limiter.limit("30/minute")
+def open_invite(request: Request, code: str):
+    """Called by the invite link's welcome page. Returns who invited them (first name only)
+    and remembers the visit so the app can fill in the code after it's installed."""
+    inviter = invite_service.inviter_for(code)
+    if not inviter:
+        return {"valid": False}
+    clean = invite_service.clean_code(code)
+    invite_service.record_click(clean, request)
+    first = (inviter.get("full_name") or "").strip().split(" ")[0]
+    return {"valid": True, "code": clean, "inviter_first_name": first or None}
+
+
+@router.get("/pending-invite")
+@limiter.limit("10/minute")
+def pending_invite(request: Request):
+    """Called by the app on the sign-up screen: the code from an invite link recently opened
+    on this phone's network, if any."""
+    return {"code": invite_service.pending_code(request) or None}

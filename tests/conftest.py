@@ -43,6 +43,9 @@ COLUMNS = {
     "app_content": ["key", "value", "label", "updated_at"],
     "wishlist": ["id", "user_id", "reward_id", "created_at"],
     "tiers": ["id", "name", "min_points", "benefits", "sort_order"],
+    # 006_feedback_invites.sql
+    "feedback": ["id", "user_id", "category", "message", "app_version", "platform", "status", "created_at"],
+    "invite_clicks": ["id", "referral_code", "ip_hash", "created_at"],
 }
 DEFAULTS = {
     "users": {"total_points": 0, "bonus_points_granted": False, "profile_complete": False, "is_admin": False,
@@ -51,11 +54,13 @@ DEFAULTS = {
     "event_rsvps": {"attended": False, "points_awarded": False, "cancelled": False},
     "events": {"is_active": True, "points_for_attending": 0, "points_for_referring": 0},
     "rewards": {"is_active": True},
+    "feedback": {"status": "new"},
 }
 CHECKS = {
     "transactions": {"type": {"signup_bonus", "referral", "event_attend", "event_guest", "redemption",
                               "redemption_refund", "admin_adjustment"}},
     "redemptions": {"status": {"pending", "approved", "sent", "rejected"}},
+    "feedback": {"status": {"new", "read", "resolved"}},
     "referrals": {"status": {"pending", "invited", "registered", "contacted", "loan_in_progress", "settled",
                              "rewarded", "closed"}},
 }

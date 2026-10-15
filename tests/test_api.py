@@ -346,3 +346,63 @@ def test_help_and_contact_content(env):
     c.put("/api/v1/content/referral_points", headers=env["admin"], json={"value": "500"})
     row = next(r for r in env["db"].tables["app_content"] if r["key"] == "referral_points")
     assert row.get("label") != "referral_points"
+
+
+# ── Personal invite links ─────────────────────────────────────────────────
+def test_invite_link_fills_in_code_after_install(env):
+    c = env["c"]
+    friend_phone = {"CF-Connecting-IP": "203.0.113.5"}
+    assert c.get("/api/v1/referrals/summary", headers=env["member"]).json()["invite_link"] == \
+        "https://rrc-admin.vercel.app/join/MANOJ123"
+
+    # Friend opens the link: the page greets them with the inviter's first name.
+    r = c.post("/api/v1/referrals/invite/manoj123", headers=friend_phone)
+    assert r.json() == {"valid": True, "code": "MANOJ123", "inviter_first_name": "Manoj"}
+    assert c.post("/api/v1/referrals/invite/NOPE0000", headers=friend_phone).json() == {"valid": False}
+
+    # After installing, the app on the same network gets the code; other networks don't.
+    assert c.get("/api/v1/referrals/pending-invite", headers=friend_phone).json() == {"code": "MANOJ123"}
+    assert c.get("/api/v1/referrals/pending-invite", headers={"CF-Connecting-IP": "198.51.100.9"}).json() == {"code": None}
+    # A faked X-Forwarded-For doesn't override the address Cloudflare reports.
+    spoof = {"CF-Connecting-IP": "198.51.100.9", "X-Forwarded-For": "203.0.113.5"}
+    assert c.get("/api/v1/referrals/pending-invite", headers=spoof).json() == {"code": None}
+
+
+def test_signup_with_invite_code_links_referral(env):
+    c, db = env["c"], env["db"]
+    # Manoj already added this friend by mobile; she signs up with his code.
+    c.post("/api/v1/referrals/", headers=env["member"], json={
+        "referred_name": "Priya", "referred_mobile": "0411 222 333", "channel": "sms", "consent_given": True})
+    r = c.post("/api/v1/auth/register", json={
+        "full_name": "Priya Shah", "email": "priya@example.com", "password": "Secret123!",
+        "mobile": "+61411222333", "referral_code": "manoj123"})
+    assert r.status_code == 200, r.text
+    priya = next(u for u in db.tables["users"] if u["email"] == "priya@example.com")
+    assert priya["referred_by"] == MEMBER_ID
+    refs = [f for f in db.tables["referrals"] if f["referrer_id"] == MEMBER_ID and f.get("referred_user_id") == priya["id"]]
+    assert len(refs) == 1 and refs[0]["status"] == "registered" and refs[0]["referred_name"] == "Priya"
+
+    # A code-only signup (no earlier referral) creates the referral row instead.
+    c.post("/api/v1/auth/register", json={"full_name": "Sam Lee", "email": "sam@example.com", "password": "Secret123!",
+                                          "mobile": "0400 999 888", "referral_code": "MANOJ123"})
+    sam = next(u for u in db.tables["users"] if u["email"] == "sam@example.com")
+    row = next(f for f in db.tables["referrals"] if f.get("referred_user_id") == sam["id"])
+    assert row["channel"] == "code" and row["status"] == "registered"
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────
+def test_feedback_reaches_admin(env):
+    c = env["c"]
+    assert c.post("/api/v1/feedback", json={"message": "Hi"}).status_code in (401, 403)
+    assert c.post("/api/v1/feedback", headers=env["member"], json={"message": "  "}).status_code == 400
+    r = c.post("/api/v1/feedback", headers=env["member"], json={
+        "message": "Love the app! Could events show parking info?", "category": "idea", "app_version": "3.2.0", "platform": "ios"})
+    assert r.status_code == 200, r.text
+
+    assert c.get("/api/v1/admin/feedback", headers=env["member"]).status_code == 403
+    items = c.get("/api/v1/admin/feedback", headers=env["admin"]).json()
+    assert items[0]["category"] == "idea" and items[0]["status"] == "new"
+    assert items[0]["users"]["email"] == "manoj@example.com"
+    r = c.put(f"/api/v1/admin/feedback/{items[0]['id']}", headers=env["admin"], json={"status": "resolved"})
+    assert r.status_code == 200 and r.json()["status"] == "resolved"
+    assert c.put(f"/api/v1/admin/feedback/{items[0]['id']}", headers=env["admin"], json={"status": "done"}).status_code == 400

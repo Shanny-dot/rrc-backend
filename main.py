@@ -2,11 +2,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from app.core.client_ip import client_ip
 from slowapi.errors import RateLimitExceeded
-from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config
+from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback
 
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=client_ip)
 
 app = FastAPI(title="RRC App API", description="API for Referral and Rewards Platform")
 app.state.limiter = limiter
@@ -54,6 +54,7 @@ app.include_router(content.router, prefix="/api/v1/content", tags=["content"])
 app.include_router(tiers.router, prefix="/api/v1/tiers", tags=["tiers"])
 app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])
 app.include_router(app_config.router, prefix="/api/v1/app", tags=["app"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["feedback"])
 
 if __name__ == "__main__":
     import uvicorn

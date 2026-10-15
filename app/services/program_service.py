@@ -12,6 +12,7 @@ SETTING_DEFAULTS = {
     "ios_store_url": "",
     "android_store_url": "https://play.google.com/store/apps/details?id=com.rrc.app",
     "update_message": "",
+    "invite_base_url": "https://rrc-admin.vercel.app/join",
 }
 
 # Points that count towards "lifetime earned": everything except redemptions and their refunds.

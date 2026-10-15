@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from typing import Optional
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.core.client_ip import client_ip
 from app.core.config import settings
 from app.core.supabase_client import supabase_anon, supabase_admin
 from app.core.auth_middleware import get_current_user, issue_app_token
@@ -15,6 +15,7 @@ from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile
+from app.services.invite_service import link_new_member
 import random
 import string
 import time
@@ -22,7 +23,7 @@ import uuid
 import jwt
 
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=client_ip)
 
 class RegisterCredentials(BaseModel):
     full_name: str
@@ -43,6 +44,7 @@ class SocialLoginRequest(BaseModel):
     id_token: Optional[str] = None
     access_token: Optional[str] = None
     raw_nonce: Optional[str] = None
+    referral_code: Optional[str] = None   # from a friend's invite link, for new members
 
 class FCMTokenRequest(BaseModel):
     fcm_token: str
@@ -85,7 +87,7 @@ def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
     return user_id
 
 
-def _sign_in_social_member(email: str, full_name: str, provider: str) -> dict:
+def _sign_in_social_member(email: str, full_name: str, provider: str, referral_code: str = None) -> dict:
     """Find the member with this verified email, or create one (with the welcome bonus),
     and return a backend session token."""
     email = email.strip().lower()
@@ -108,6 +110,8 @@ def _sign_in_social_member(email: str, full_name: str, provider: str) -> dict:
             supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
         except Exception as e:
             print(f"Welcome bonus warning ({provider}): {e}")
+        if referral_code:
+            link_new_member(user_id, referral_code, full_name, email=email)
     token = issue_app_token(user_id, email)
     return {"access_token": token, "refresh_token": token, "token_type": "bearer"}
 
@@ -126,7 +130,7 @@ def social_login(creds: SocialLoginRequest):
             print(f"{creds.provider} sign-in rejected: {e}")
             raise HTTPException(status_code=401, detail=str(e) if "email" in str(e).lower() else
                                 f"{creds.provider.capitalize()} sign-in failed. Please try again.")
-        return _sign_in_social_member(profile["email"], profile["name"], creds.provider)
+        return _sign_in_social_member(profile["email"], profile["name"], creds.provider, creds.referral_code)
     # 1. Attempt standard Supabase social verification
     try:
         auth_response = supabase_anon.auth.sign_in_with_id_token({
@@ -156,6 +160,8 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False
                 }).execute()
+                if creds.referral_code:
+                    link_new_member(user.id, creds.referral_code, full_name, email=user.email)
 
             return {
                 "access_token": session.access_token,
@@ -192,6 +198,8 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False
                 }).execute()
+                if creds.referral_code:
+                    link_new_member(user_id, creds.referral_code, "Apple User", email=apple_email)
 
             token = issue_app_token(user_id, apple_email)
             return {
@@ -234,14 +242,7 @@ def register(request: Request, creds: RegisterCredentials):
         if not user:
             raise HTTPException(status_code=400, detail="Signup failed")
         
-        # 2. Check for referral code validity
-        referred_by_id = None
-        if creds.referral_code:
-            ref_resp = supabase_admin.table("users").select("id").eq("referral_code", creds.referral_code.upper()).execute()
-            if ref_resp.data:
-                referred_by_id = ref_resp.data[0]["id"]
-            
-        # 3. Create public.users profile record
+        # 2. Create public.users profile record
         unique_ref_code = generate_referral_code()
         
         user_data = {
@@ -250,7 +251,6 @@ def register(request: Request, creds: RegisterCredentials):
             "email": creds.email,
             "mobile": creds.mobile,
             "referral_code": unique_ref_code,
-            "referred_by": referred_by_id,
             "total_points": 0,
             "bonus_points_granted": False
         }
@@ -267,24 +267,9 @@ def register(request: Request, creds: RegisterCredentials):
                 print(f"Registration cleanup warning: {cleanup_err}")
             raise profile_err
         
-        # 4. Handle Referral Tracking if they used a code
-        if referred_by_id:
-             # Find the pending referral and update it
-             ref_update_resp = supabase_admin.table("referrals").update({
-                   "status": "registered",
-                   "referred_user_id": user.id
-             }).eq("referrer_id", referred_by_id).eq("referred_email", creds.email).execute()
-
-             # If no explicit referral invite existed but they used a code anyway:
-             if not ref_update_resp.data:
-                  supabase_admin.table("referrals").insert({
-                      "referrer_id": referred_by_id,
-                      "referred_name": creds.full_name,
-                      "referred_email": creds.email,
-                      "referred_mobile": creds.mobile,
-                      "status": "registered",
-                      "referred_user_id": user.id
-                  }).execute()
+        # 3. Link to the member whose code (or invite link) they joined with
+        if creds.referral_code:
+            link_new_member(user.id, creds.referral_code, creds.full_name, email=creds.email, mobile=creds.mobile)
         # 5. Send verification OTP via Guni SMS
         try:
             SmsService.send_otp(creds.mobile)

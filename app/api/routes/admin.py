@@ -406,3 +406,22 @@ def update_referral_stage(id: str, body: ReferralStageUpdate):
 
     resp = supabase_admin.table("referrals").update(update).eq("id", id).execute()
     return resp.data[0] if resp.data else update
+
+# ── Member feedback from the app ───────────────────────────────────────────
+FEEDBACK_STATUSES = {"new", "read", "resolved"}
+
+
+@router.get("/feedback")
+def list_feedback():
+    rows = supabase_admin.table("feedback").select("*, users(full_name, email, mobile)").order("created_at", desc=True).execute().data or []
+    return rows
+
+
+@router.put("/feedback/{id}")
+def update_feedback(id: str, status: str = Body(..., embed=True)):
+    if status not in FEEDBACK_STATUSES:
+        raise HTTPException(status_code=400, detail="Status must be new, read or resolved.")
+    resp = supabase_admin.table("feedback").update({"status": status}).eq("id", id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    return resp.data[0]

@@ -37,6 +37,10 @@ class Query:
         self.filters.append(lambda r, k=k, v=v: str(r.get(k)) == str(v) if v is not None else r.get(k) is None)
         return self
 
+    def lt(self, k, v):
+        self.filters.append(lambda r, k=k, v=v: r.get(k) is not None and str(r.get(k)) < str(v))
+        return self
+
     def in_(self, k, values):
         vals = {str(v) for v in values}
         self.filters.append(lambda r, k=k: str(r.get(k)) in vals)
@@ -135,6 +139,7 @@ class FakeAuth:
 
     def __init__(self):
         self.accounts, self.sessions, self.reset_requests = {}, {}, []
+        self.admin = _FakeAuthAdmin(self)
 
     def get_user(self, token):
         uid = self.sessions.get(token)
@@ -155,10 +160,22 @@ class FakeAuth:
     def reset_password_for_email(self, email, options=None):
         self.reset_requests.append((email, options or {}))
 
-    class admin:  # noqa: N801
-        @staticmethod
-        def delete_user(uid):
-            return None
+
+
+class _FakeAuthAdmin:
+    def __init__(self, auth):
+        self.auth = auth
+
+    def create_user(self, attrs):
+        email = attrs["email"].strip().lower()
+        if email in self.auth.accounts:
+            raise Exception("A user with this email address has already been registered (already exists)")
+        uid = str(uuid.uuid4())
+        self.auth.accounts[email] = (attrs.get("password"), uid, (attrs.get("user_metadata") or {}).get("full_name", ""))
+        return _Obj(user=_Obj(id=uid, email=email))
+
+    def delete_user(self, uid):
+        self.auth.accounts = {e: a for e, a in self.auth.accounts.items() if a[1] != uid}
 
 
 class FakeSupabase:

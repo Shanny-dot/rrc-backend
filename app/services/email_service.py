@@ -1,3 +1,4 @@
+import html
 import resend
 from app.core.config import settings
 
@@ -200,6 +201,33 @@ class EmailService:
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"Your {reward_name} has been sent",
+                "html": html_content,
+            })
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+
+    @staticmethod
+    def send_staff_feedback(to_email: str, member: dict, feedback: dict):
+        if not _EMAIL_ENABLED:
+            print("Email skipped: RESEND_API_KEY not configured")
+            return
+        name = html.escape(member.get("full_name") or "A member")
+        contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))
+        category = html.escape((feedback.get("category") or "other").capitalize())
+        message = html.escape(feedback.get("message") or "").replace("\n", "<br>")
+        app = html.escape(" ".join(v for v in (feedback.get("platform"), feedback.get("app_version")) if v))
+        html_content = f"""
+        <h2>New app feedback ({category})</h2>
+        <p><strong>{name}</strong>{f" — {contact}" if contact else ""}</p>
+        <blockquote style="border-left:3px solid #FAB95B;margin:0;padding:8px 14px">{message}</blockquote>
+        <p style="color:#777">{f"App: {app}. " if app else ""}See all feedback on the admin website.</p>
+        """
+        try:
+            return resend.Emails.send({
+                "from": FROM_EMAIL,
+                "to": to_email,
+                "reply_to": member.get("email") or None,
+                "subject": f"App feedback from {member.get('full_name') or 'a member'}",
                 "html": html_content,
             })
         except Exception as e:
