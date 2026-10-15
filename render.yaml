@@ -25,3 +25,7 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: GUNI_SMS_API_KEY
+        sync: false
+      - key: GUNI_SMS_SENDER
+        sync: false

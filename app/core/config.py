@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     ADMIN_EMAIL: str
     FRONTEND_URL: HttpUrl
+    GUNI_SMS_API_KEY: str = ""
+    GUNI_SMS_SENDER: str = "Reliiance"
 
     class Config:
         env_file = ".env"
