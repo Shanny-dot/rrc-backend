@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Facebook sign-in. Empty = Facebook sign-in off.
     FACEBOOK_APP_ID: str = ""
     FACEBOOK_APP_SECRET: str = ""
+    # Guni SMS App Token used to send mobile OTPs. Empty = SMS off.
+    GUNI_SMS_API_KEY: str = ""
+    GUNI_SMS_SENDER: str = "Reliiance"
 
     class Config:
         env_file = ".env"

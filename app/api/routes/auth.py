@@ -14,6 +14,7 @@ from app.services.program_service import tier_status
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
+from app.services.sms_service import SmsService, format_mobile
 import random
 import string
 import time
@@ -284,27 +285,9 @@ def register(request: Request, creds: RegisterCredentials):
                       "status": "registered",
                       "referred_user_id": user.id
                   }).execute()
-        # Auto-format phone numbers for Twilio E.164
-        formatted_mobile = creds.mobile.strip()
-        # If it doesn't already start with a '+', attempt to map Aus/Ind
-        if not formatted_mobile.startswith('+'):
-            # Indian numbers are exactly 10 digits
-            if len(formatted_mobile) == 10:
-                formatted_mobile = f"+91{formatted_mobile}"
-            # Australian numbers without leading zero are 9 digits (e.g., 412 345 678)
-            elif len(formatted_mobile) == 9:
-                formatted_mobile = f"+61{formatted_mobile}"
-            # Australian mobile with leading zero (e.g., 0412 345 678)
-            elif len(formatted_mobile) == 10 and formatted_mobile.startswith('0'):
-                formatted_mobile = f"+61{formatted_mobile[1:]}"
-            else:
-                formatted_mobile = f"+{formatted_mobile}"
-
-        # 5. Trigger Twilio SMS via Supabase OTP Sign In (if enabled)
+        # 5. Send verification OTP via Guni SMS
         try:
-            supabase_anon.auth.sign_in_with_otp({
-                 "phone": formatted_mobile
-            })
+            SmsService.send_otp(creds.mobile)
         except Exception as otp_err:
             print(f"SMS OTP trigger skipped/error: {otp_err}")
         
@@ -335,20 +318,7 @@ class ResendOTPRequest(BaseModel):
 @limiter.limit("5/minute")
 def resend_otp(request: Request, req: ResendOTPRequest):
     try:
-        formatted_mobile = req.mobile.strip()
-        if not formatted_mobile.startswith('+'):
-            if len(formatted_mobile) == 10:
-                formatted_mobile = f"+91{formatted_mobile}"
-            elif len(formatted_mobile) == 9:
-                formatted_mobile = f"+61{formatted_mobile}"
-            elif len(formatted_mobile) == 10 and formatted_mobile.startswith('0'):
-                formatted_mobile = f"+61{formatted_mobile[1:]}"
-            else:
-                formatted_mobile = f"+{formatted_mobile}"
-                
-        supabase_anon.auth.sign_in_with_otp({
-             "phone": formatted_mobile
-        })
+        SmsService.send_otp(req.mobile)
         return {"success": True, "message": "OTP sent successfully"}
     except Exception as e:
         print(f"Resend OTP Error: {e}")
@@ -362,30 +332,22 @@ class VerifyMobileRequest(BaseModel):
 @limiter.limit("10/minute")
 def verify_mobile(request: Request, req: VerifyMobileRequest):
     try:
-        # Normalise phone to E.164 (must match what was used when OTP was sent)
-        formatted_mobile = req.mobile.strip()
-        if not formatted_mobile.startswith('+'):
-            if len(formatted_mobile) == 10 and not formatted_mobile.startswith('0'):
-                formatted_mobile = f"+91{formatted_mobile}"
-            elif len(formatted_mobile) == 9:
-                formatted_mobile = f"+61{formatted_mobile}"
-            elif len(formatted_mobile) == 10 and formatted_mobile.startswith('0'):
-                formatted_mobile = f"+61{formatted_mobile[1:]}"
-            else:
-                formatted_mobile = f"+{formatted_mobile}"
-
-        # Normal Flow: Verify the Twilio SMS via Supabase
-        verify_response = supabase_anon.auth.verify_otp({
-            "phone": formatted_mobile,
-            "token": req.code,
-            "type": "sms"
-        })
-        
-        if not verify_response.session:
+        if not SmsService.verify_otp(req.mobile, req.code):
              raise HTTPException(status_code=400, detail="Invalid OTP code or session expired")
-             
-        return {"success": True, "message": "Mobile number verified", "access_token": verify_response.session.access_token}
 
+        # Issue a backend token for the newest live account registered with this mobile
+        formatted_mobile = format_mobile(req.mobile)
+        user_db = supabase_admin.table("users").select("*").in_("mobile", list({formatted_mobile, req.mobile.strip()})) \
+            .order("created_at", desc=True).execute()
+        user_row = next((u for u in (user_db.data or []) if not u.get("deleted_at")), None)
+        if not user_row:
+             raise HTTPException(status_code=404, detail="No account found for this mobile number")
+
+        token = issue_app_token(user_row["id"], user_row.get("email"))
+        return {"success": True, "message": "Mobile number verified", "access_token": token}
+
+    except HTTPException as e:
+         raise e
     except Exception as e:
          raise HTTPException(status_code=400, detail=str(e))
 
