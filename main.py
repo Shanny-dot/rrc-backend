@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from app.core.client_ip import client_ip
 from slowapi.errors import RateLimitExceeded
-from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback
+from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback, broker
 
 limiter = Limiter(key_func=client_ip)
 
@@ -55,6 +55,7 @@ app.include_router(tiers.router, prefix="/api/v1/tiers", tags=["tiers"])
 app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])
 app.include_router(app_config.router, prefix="/api/v1/app", tags=["app"])
 app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["feedback"])
+app.include_router(broker.router, prefix="/api/v1/broker", tags=["broker"])
 
 if __name__ == "__main__":
     import uvicorn

@@ -425,3 +425,28 @@ def update_feedback(id: str, status: str = Body(..., embed=True)):
     if not resp.data:
         raise HTTPException(status_code=404, detail="Feedback not found")
     return resp.data[0]
+
+
+# ── Broker requests (Book a time / loan reviews) ──────────────────────────
+BROKER_REQUEST_STATUSES = {"new", "contacted", "closed"}
+
+
+@router.get("/broker-requests")
+def list_broker_requests():
+    return supabase_admin.table("loan_reviews").select("*, users(full_name, email, mobile, loan_settled_on)") \
+        .order("created_at", desc=True).execute().data or []
+
+
+@router.put("/broker-requests/{id}")
+def update_broker_request(id: str, status: str = Body(None, embed=True), staff_note: str = Body(None, embed=True)):
+    update = {"updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    if status is not None:
+        if status not in BROKER_REQUEST_STATUSES:
+            raise HTTPException(status_code=400, detail="Status must be new, contacted or closed.")
+        update["status"] = status
+    if staff_note is not None:
+        update["staff_note"] = staff_note.strip()[:1000] or None
+    resp = supabase_admin.table("loan_reviews").update(update).eq("id", id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return resp.data[0]

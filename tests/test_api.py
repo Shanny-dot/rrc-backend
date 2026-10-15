@@ -406,3 +406,23 @@ def test_feedback_reaches_admin(env):
     r = c.put(f"/api/v1/admin/feedback/{items[0]['id']}", headers=env["admin"], json={"status": "resolved"})
     assert r.status_code == 200 and r.json()["status"] == "resolved"
     assert c.put(f"/api/v1/admin/feedback/{items[0]['id']}", headers=env["admin"], json={"status": "done"}).status_code == 400
+
+
+# ── Broker requests (Book a time / loan review) ───────────────────────────
+def test_book_a_time_reaches_staff(env):
+    import datetime
+    c = env["c"]
+    day = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+    r = c.post("/api/v1/broker/requests", headers=env["member"],
+               json={"kind": "call", "preferred_date": day, "preferred_time": "morning", "note": "Best on my mobile"})
+    assert r.status_code == 200, r.text
+    assert c.post("/api/v1/broker/requests", headers=env["member"], json={"kind": "call", "preferred_date": "2020-01-01"}).status_code == 400
+    assert c.post("/api/v1/broker/requests", headers=env["member"], json={"kind": "lunch"}).status_code == 400
+
+    assert c.get("/api/v1/admin/broker-requests", headers=env["member"]).status_code == 403
+    items = c.get("/api/v1/admin/broker-requests", headers=env["admin"]).json()
+    pretty = datetime.date.fromisoformat(day).strftime("%a %d %b %Y")
+    assert items[0]["note"] == f"Call booking: {pretty}, morning. Best on my mobile"
+    assert items[0]["status"] == "new" and items[0]["users"]["email"] == "manoj@example.com"
+    r = c.put(f"/api/v1/admin/broker-requests/{items[0]['id']}", headers=env["admin"], json={"status": "contacted", "staff_note": "Called Tue"})
+    assert r.status_code == 200 and r.json()["status"] == "contacted" and r.json()["staff_note"] == "Called Tue"

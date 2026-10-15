@@ -232,3 +232,27 @@ class EmailService:
             })
         except Exception as e:
             print(f"Failed to send email: {e}")
+
+    @staticmethod
+    def send_staff_broker_request(to_email: str, member: dict, note: str):
+        if not _EMAIL_ENABLED:
+            print("Email skipped: RESEND_API_KEY not configured")
+            return
+        name = html.escape(member.get("full_name") or "A member")
+        contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))
+        html_content = f"""
+        <h2>{name} would like to talk to their broker</h2>
+        <p>{html.escape(note)}</p>
+        <p>{contact}</p>
+        <p style="color:#777">Mark it as contacted on the admin website's Broker requests page.</p>
+        """
+        try:
+            return resend.Emails.send({
+                "from": FROM_EMAIL,
+                "to": to_email,
+                "reply_to": member.get("email") or None,
+                "subject": f"Broker request from {member.get('full_name') or 'a member'}",
+                "html": html_content,
+            })
+        except Exception as e:
+            print(f"Failed to send email: {e}")
