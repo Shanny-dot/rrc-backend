@@ -268,3 +268,55 @@ def test_forgot_password_link_opens_reset_page(env):
     email, opts = env["db"].auth.reset_requests[-1]
     assert email == "manoj@example.com"
     assert opts["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
+
+
+# ── Mobile OTP (Guni SMS) ─────────────────────────────────────────────────
+def _capture_guni(monkeypatch):
+    """Stub the Guni gateway; return the list of JSON payloads it was sent."""
+    import httpx
+    import app.services.sms_service as sms
+    sent = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        assert url == sms.GUNI_GATEWAY_URL and headers["Authorization"] == "Bearer test-guni-key"
+        sent.append(json)
+        return httpx.Response(200, json={"status": True, "message": "Quick SMS Sent Successfully"})
+
+    monkeypatch.setattr(sms, "_SMS_ENABLED", True)
+    monkeypatch.setattr(sms.settings, "GUNI_SMS_API_KEY", "test-guni-key")
+    monkeypatch.setattr(sms.httpx, "post", fake_post)
+    return sent
+
+
+def test_mobile_otp_send_and_verify(env, monkeypatch):
+    c, db = env["c"], env["db"]
+    user(db, FRIEND_ID)["mobile"] = "+61412000111"
+    sent = _capture_guni(monkeypatch)
+
+    # The app may send the local format; it must reach Guni (and match on verify) as +61.
+    r = c.post("/api/v1/auth/resend-otp", json={"mobile": "0412 000 111"})
+    assert r.status_code == 200, r.text
+    assert sent[-1]["contacts"] == ["61412000111"] and sent[-1]["sender"] == "Reliiance"
+    code = sent[-1]["message"].split("code is ")[1][:6]
+    assert code.isdigit()
+
+    wrong = str((int(code) + 1) % 1000000).zfill(6)
+    assert c.post("/api/v1/auth/verify-mobile", json={"mobile": "+61412000111", "code": wrong}).status_code == 400
+
+    r = c.post("/api/v1/auth/verify-mobile", json={"mobile": "0412000111", "code": code})
+    assert r.status_code == 200, r.text
+    me = c.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"})
+    assert me.status_code == 200 and me.json()["email"] == "old@example.com"
+
+
+def test_mobile_otp_unknown_number_and_sms_off(env, monkeypatch):
+    c = env["c"]
+    sent = _capture_guni(monkeypatch)
+    c.post("/api/v1/auth/resend-otp", json={"mobile": "+61499999999"})
+    code = sent[-1]["message"].split("code is ")[1][:6]
+    r = c.post("/api/v1/auth/verify-mobile", json={"mobile": "+61499999999", "code": code})
+    assert r.status_code == 404
+
+    import app.services.sms_service as sms
+    monkeypatch.setattr(sms, "_SMS_ENABLED", False)
+    assert c.post("/api/v1/auth/resend-otp", json={"mobile": "+61412000111"}).status_code == 400
