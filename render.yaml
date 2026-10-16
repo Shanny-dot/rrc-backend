@@ -31,3 +31,7 @@ services:
         sync: false
       - key: JOB_SECRET
         sync: false
+      - key: ZEPTOMAIL_API_KEY
+        sync: false
+      - key: FROM_NAME
+        sync: false

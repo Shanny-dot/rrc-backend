@@ -7,6 +7,11 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_KEY: str
     RESEND_API_KEY: str
+    # ZeptoMail (Zoho) — used instead of Resend when set. The key works only on its own
+    # region's host; this account is on the Australian data centre.
+    ZEPTOMAIL_API_KEY: str = ""
+    ZEPTOMAIL_API_URL: str = "https://api.zeptomail.com.au/v1.1/email"
+    FROM_NAME: str = "Reliance Rewards"
     FROM_EMAIL: str
     FIREBASE_CREDENTIALS_JSON: str
     JWT_SECRET: str

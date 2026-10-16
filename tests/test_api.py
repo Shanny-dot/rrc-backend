@@ -573,3 +573,34 @@ def test_event_thank_you_reaches_attendees(env, monkeypatch):
     # Sending again doesn't message the same people twice.
     again = c.post(f"/api/v1/admin/events/{ev}/thank-you", headers=env["admin"], json={"message": "Thanks again all"})
     assert again.json()["notified"] == 0
+
+
+# ── Email via ZeptoMail ───────────────────────────────────────────────────
+def test_emails_go_through_zeptomail(monkeypatch):
+    import httpx
+    import app.services.email_service as es
+    calls = []
+
+    def fake_post(url, json=None, timeout=None, headers=None):
+        calls.append((url, json, headers))
+        return httpx.Response(201, json={"data": [{"code": "EM_104", "message": "Email request received"}]})
+
+    monkeypatch.setattr(es.settings, "ZEPTOMAIL_API_KEY", "abc123token")
+    monkeypatch.setattr(es.settings, "FROM_NAME", "Reliance Rewards")
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "FROM_EMAIL", "noreply@reliiancerewards.com.au")
+    monkeypatch.setattr(es.httpx, "post", fake_post)
+
+    es.EmailService.send_staff_feedback("staff@example.com", {"full_name": "Manoj", "email": "manoj@example.com"},
+                                        {"category": "idea", "message": "More events please"})
+    url, body, headers = calls[-1]
+    assert url == "https://api.zeptomail.com.au/v1.1/email"
+    assert headers["Authorization"] == "Zoho-enczapikey abc123token"
+    assert body["from"] == {"address": "noreply@reliiancerewards.com.au", "name": "Reliance Rewards"}
+    assert body["to"] == [{"email_address": {"address": "staff@example.com"}}]
+    assert body["reply_to"] == [{"address": "manoj@example.com"}]
+    assert "More events please" in body["htmlbody"] and body["subject"] == "App feedback from Manoj"
+
+    # A refused send (e.g. no credits) is reported as not sent rather than crashing the request.
+    monkeypatch.setattr(es.httpx, "post", lambda *a, **k: httpx.Response(429, json={"error": {"message": "Credit exhausted"}}))
+    assert es.EmailService.send_event_thank_you("a@example.com", "Al", "Gala", "Thanks!", []) is False

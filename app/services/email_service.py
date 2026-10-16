@@ -1,10 +1,42 @@
 import html
+import httpx
 import resend
 from app.core.config import settings
 
+# Emails go through ZeptoMail (Zoho) when ZEPTOMAIL_API_KEY is set, otherwise Resend.
+# FROM_EMAIL must be an address on a domain verified in that email service.
 resend.api_key = settings.RESEND_API_KEY or ""
 FROM_EMAIL = settings.FROM_EMAIL or "noreply@rrcapp.com"
-_EMAIL_ENABLED = bool(settings.RESEND_API_KEY and settings.FROM_EMAIL)
+_EMAIL_ENABLED = bool((settings.ZEPTOMAIL_API_KEY or settings.RESEND_API_KEY) and settings.FROM_EMAIL)
+
+
+def _zepto_address(value):
+    return {"address": value} if isinstance(value, str) else value
+
+
+def _send(params: dict):
+    """Sends one email. params: from, to (address or list), subject, html, optional reply_to.
+    Raises on failure so callers' error handling (and logs) still apply."""
+    if settings.ZEPTOMAIL_API_KEY:
+        to = params["to"] if isinstance(params["to"], list) else [params["to"]]
+        body = {
+            "from": {"address": params["from"], "name": settings.FROM_NAME},
+            "to": [{"email_address": _zepto_address(a)} for a in to],
+            "subject": params["subject"],
+            "htmlbody": params["html"],
+        }
+        if params.get("reply_to"):
+            body["reply_to"] = [_zepto_address(params["reply_to"])]
+        key = settings.ZEPTOMAIL_API_KEY.strip()
+        r = httpx.post(settings.ZEPTOMAIL_API_URL, json=body, timeout=30, headers={
+            "Authorization": key if key.startswith("Zoho-enczapikey") else f"Zoho-enczapikey {key}",
+            "Accept": "application/json",
+        })
+        if r.status_code >= 300:
+            raise Exception(f"ZeptoMail {r.status_code}: {r.text[:300]}")
+        return r.json()
+    params = {k: v for k, v in params.items() if v is not None}
+    return resend.Emails.send(params)
 
 
 class EmailService:
@@ -12,7 +44,7 @@ class EmailService:
     @staticmethod
     def send_welcome_email(to_email: str, full_name: str, referral_code: str):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>Welcome to RRC, {full_name}!</h1>
@@ -21,7 +53,7 @@ class EmailService:
         <p>Share this code with friends to earn more points!</p>
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": "Welcome to RRC - Your 100 Bonus Points",
@@ -34,7 +66,7 @@ class EmailService:
     @staticmethod
     def send_referral_invite(to_email: str, inviter_name: str, referral_code: str = None, invite_link: str = None):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         code_html = f"<p>Use {inviter_name}'s code <strong>{referral_code}</strong> when you sign up.</p>" if referral_code else ""
         link_html = f'<p><a href="{invite_link}">Join Reliance Rewards</a></p>' if invite_link else ""
@@ -45,7 +77,7 @@ class EmailService:
         {link_html}
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"{inviter_name} invited you to Reliance Rewards",
@@ -58,7 +90,7 @@ class EmailService:
     @staticmethod
     def send_rsvp_confirmation(to_email: str, event_name: str, event_date: str, event_location: str, qr_base64: str):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>RSVP Confirmed: {event_name}</h1>
@@ -68,7 +100,7 @@ class EmailService:
         <img src="{qr_base64}" alt="QR Code" />
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"Your RSVP for {event_name}",
@@ -81,14 +113,14 @@ class EmailService:
     @staticmethod
     def send_guest_invite(to_email: str, inviter_name: str, event_name: str):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>You're invited as a guest!</h1>
         <p>{inviter_name} has invited you to attend {event_name}.</p>
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"Guest Invitation: {event_name}",
@@ -101,7 +133,7 @@ class EmailService:
     @staticmethod
     def send_redemption_approved(to_email: str, reward_name: str, points_used: int, remaining_balance: int):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>Reward Redemption Approved</h1>
@@ -110,7 +142,7 @@ class EmailService:
         <p>Remaining balance: {remaining_balance}</p>
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": "Reward Redemption Approved",
@@ -123,7 +155,7 @@ class EmailService:
     @staticmethod
     def send_redemption_rejected(to_email: str, reward_name: str, refund_note: str, remaining_balance: int):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>Reward Redemption Update</h1>
@@ -132,7 +164,7 @@ class EmailService:
         <p>Your points have been refunded. Remaining balance: {remaining_balance}</p>
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": "Reward Redemption Update",
@@ -145,14 +177,14 @@ class EmailService:
     @staticmethod
     def notify_admin_new_redemption(reward_name: str):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>New Redemption Request</h1>
         <p>A user has requested to redeem: {reward_name}. Please log in to the admin panel to action it.</p>
         """
         try:
-            r = resend.Emails.send({
+            r = _send({
                 "from": FROM_EMAIL,
                 "to": settings.ADMIN_EMAIL,
                 "subject": "ACTION REQUIRED: New Reward Redemption",
@@ -165,7 +197,7 @@ class EmailService:
     @staticmethod
     def send_redemption_requested(to_email: str, reward_name: str, points_used: int, remaining_balance: int, reference: str):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         html_content = f"""
         <h1>We've received your reward request</h1>
@@ -176,7 +208,7 @@ class EmailService:
         <p>We'll let you know when it's on its way.</p>
         """
         try:
-            return resend.Emails.send({
+            return _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"Reward request received ({reference})",
@@ -188,7 +220,7 @@ class EmailService:
     @staticmethod
     def send_redemption_sent(to_email: str, reward_name: str, note: str = None):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         note_html = f"<p>{note}</p>" if note else ""
         html_content = f"""
@@ -197,7 +229,7 @@ class EmailService:
         {note_html}
         """
         try:
-            return resend.Emails.send({
+            return _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"Your {reward_name} has been sent",
@@ -209,7 +241,7 @@ class EmailService:
     @staticmethod
     def send_staff_feedback(to_email: str, member: dict, feedback: dict):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         name = html.escape(member.get("full_name") or "A member")
         contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))
@@ -223,7 +255,7 @@ class EmailService:
         <p style="color:#777">{f"App: {app}. " if app else ""}See all feedback on the admin website.</p>
         """
         try:
-            return resend.Emails.send({
+            return _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "reply_to": member.get("email") or None,
@@ -236,7 +268,7 @@ class EmailService:
     @staticmethod
     def send_staff_broker_request(to_email: str, member: dict, note: str):
         if not _EMAIL_ENABLED:
-            print("Email skipped: RESEND_API_KEY not configured")
+            print("Email skipped: email sending is not configured")
             return
         name = html.escape(member.get("full_name") or "A member")
         contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))
@@ -247,7 +279,7 @@ class EmailService:
         <p style="color:#777">Mark it as contacted on the admin website's Broker requests page.</p>
         """
         try:
-            return resend.Emails.send({
+            return _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "reply_to": member.get("email") or None,
@@ -279,7 +311,7 @@ class EmailService:
         {broker_html}
         """
         try:
-            resend.Emails.send({
+            _send({
                 "from": FROM_EMAIL,
                 "to": to_email,
                 "subject": f"Thanks for coming to {event_title}",
