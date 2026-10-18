@@ -1,4 +1,4 @@
-﻿"""End-to-end API checks for the 3.1 release: every endpoint the new app screens and the
+"""End-to-end API checks for the 3.1 release: every endpoint the new app screens and the
 admin site call, run against the real route code with an in-memory database."""
 import time
 
