@@ -1,4 +1,4 @@
-"""End-to-end API checks for the 3.1 release: every endpoint the new app screens and the
+﻿"""End-to-end API checks for the 3.1 release: every endpoint the new app screens and the
 admin site call, run against the real route code with an in-memory database."""
 import time
 
@@ -15,7 +15,7 @@ def user(db, uid):
     return next(u for u in db.tables["users"] if u["id"] == uid)
 
 
-# ── Security ───────────────────────────────────────────────────────────────
+# â”€â”€ Security â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_health(env):
     assert env["c"].get("/health").json() == {"status": "ok"}
 
@@ -35,7 +35,7 @@ def test_forged_token_rejected(env):
     assert r.status_code == 401
 
 
-# ── Home: tier, activity, notifications ───────────────────────────────────
+# â”€â”€ Home: tier, activity, notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_me_includes_tier(env):
     r = env["c"].get("/api/v1/auth/me", headers=env["member"])
     assert r.status_code == 200, r.text
@@ -65,7 +65,7 @@ def test_app_version(env):
     assert r.status_code == 200 and r.json()["min_version"] == "3.0.0" and r.json()["latest_version"] == "3.1.0"
 
 
-# ── Events ────────────────────────────────────────────────────────────────
+# â”€â”€ Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_events_rsvp_cycle(env):
     c, h = env["c"], env["member"]
     assert {e["id"] for e in c.get("/api/v1/events/").json()} == {"11111111-0000-4000-8000-000000000001", "11111111-0000-4000-8000-000000000002"}
@@ -99,7 +99,7 @@ def test_admin_create_event_with_category(env):
     assert r.json()["category"] == "Real Estate"
 
 
-# ── Rewards ───────────────────────────────────────────────────────────────
+# â”€â”€ Rewards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_rewards_list_and_detail(env):
     c = env["c"]
     ids = [r["id"] for r in c.get("/api/v1/rewards/").json()]
@@ -134,7 +134,7 @@ def test_redeem_and_insufficient(env):
     env["new_red"] = red_id
 
 
-# ── Admin: redemptions approve → sent ─────────────────────────────────────
+# â”€â”€ Admin: redemptions approve â†’ sent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_admin_approve_then_sent(env):
     c, a, db = env["c"], env["admin"], env["db"]
     red = env["new_red"]
@@ -149,6 +149,35 @@ def test_admin_approve_then_sent(env):
     assert any("has been sent" in n["title"] for n in notes)
 
 
+def test_admin_redemption_in_progress_and_status_wording(env, monkeypatch):
+    import app.services.email_service as es
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    c, a, h = env["c"], env["admin"], env["member"]
+    # Staff rename a status and reword its email on the admin website.
+    wording = c.get("/api/v1/admin/redemption-statuses", headers=a).json()
+    assert wording["order"] == ["pending", "in_progress", "approved", "sent", "rejected"]
+    statuses = wording["statuses"]
+    statuses["in_progress"] = {"label": "Being processed", "subject": "{reward} is being processed",
+                               "message": "Hang tight, {reward} is on the way."}
+    assert c.put("/api/v1/admin/redemption-statuses", headers=a, json={"statuses": statuses}).status_code == 200
+
+    red = c.post("/api/v1/rewards/22222222-0000-4000-8000-000000000003/redeem", headers=h).json()["id"]
+    member_email = next(e for e in emails if e["to"] == "manoj@example.com")  # staff are emailed too
+    assert "received your reward request" in member_email["subject"]
+    r = c.put(f"/api/v1/admin/redemptions/{red}/status", headers=a, json={"status": "in_progress"})
+    assert r.status_code == 200, r.text
+    assert emails[-1]["subject"] == "Toy World Card is being processed" and "Hang tight" in emails[-1]["html"]
+    acts = c.get("/api/v1/transactions/", headers=h).json()
+    assert any(x.get("redemption_id") == red and x["status_label"] == "Being processed" for x in acts)
+    # In progress â†’ Approved; an approved request can't go back.
+    assert c.put(f"/api/v1/admin/redemptions/{red}/approve", headers=a).status_code == 200
+    assert c.put(f"/api/v1/admin/redemptions/{red}/status", headers=a, json={"status": "in_progress"}).status_code == 400
+    assert c.put("/api/v1/admin/redemption-statuses", headers=a,
+                 json={"statuses": {**statuses, "approved": {"label": ""}}}).status_code == 400
+
+
 def test_admin_reject_refunds(env):
     c, db = env["c"], env["db"]
     before = user(db, MEMBER_ID)["total_points"]
@@ -157,7 +186,7 @@ def test_admin_reject_refunds(env):
     assert user(db, MEMBER_ID)["total_points"] == before + 50
 
 
-# ── Referrals ─────────────────────────────────────────────────────────────
+# â”€â”€ Referrals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_referral_new_app_requires_consent(env):
     c, h = env["c"], env["member"]
     body = {"referred_name": "Amy", "referred_mobile": "0400 111 222", "channel": "share"}
@@ -200,7 +229,7 @@ def test_admin_referral_stages_and_points(env):
     assert mine["44444444-0000-4000-8000-000000000001"]["status"] == "rewarded"
 
 
-# ── Admin: points, profile, delete ────────────────────────────────────────
+# â”€â”€ Admin: points, profile, delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_admin_points_adjustment_shows_in_activity(env):
     c, db = env["c"], env["db"]
     cur = user(db, FRIEND_ID)["total_points"]
@@ -215,9 +244,14 @@ def test_admin_points_adjustment_shows_in_activity(env):
 def test_profile_update_with_new_options(env):
     r = env["c"].put("/api/v1/auth/profile", headers=env["member"], json={
         "dob": "1986-03-14", "gender": "Male", "state": "NSW", "industry": "Accounting & Finance",
-        "home_ownership": "Own with a mortgage", "annual_income": "$50,000 – $100,000"})
+        "home_ownership": "Own with a mortgage", "annual_income": "$50,000 â€“ $100,000"})
     assert r.status_code == 200, r.text
     assert user(env["db"], MEMBER_ID)["home_ownership"] == "Own with a mortgage"
+    # The date of birth reaches the database as text: a Python date made every save fail.
+    assert user(env["db"], MEMBER_ID)["dob"] == "1986-03-14"
+    # A blank name or mobile never wipes the saved one.
+    env["c"].put("/api/v1/auth/profile", headers=env["member"], json={"full_name": " ", "city": "Sydney"})
+    assert user(env["db"], MEMBER_ID)["full_name"] == "Manoj Kumar"
 
 
 def test_admin_delete_blocks_member(env):
@@ -270,7 +304,7 @@ def test_forgot_password_link_opens_reset_page(env):
     assert opts["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
 
 
-# ── Mobile OTP (Guni SMS) ─────────────────────────────────────────────────
+# â”€â”€ Mobile OTP (Guni SMS) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _capture_guni(monkeypatch):
     """Stub the Guni gateway; return the list of JSON payloads it was sent."""
     import httpx
@@ -322,7 +356,7 @@ def test_mobile_otp_unknown_number_and_sms_off(env, monkeypatch):
     assert c.post("/api/v1/auth/resend-otp", json={"mobile": "+61412000111"}).status_code == 400
 
 
-# ── Help & contact settings ───────────────────────────────────────────────
+# â”€â”€ Help & contact settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_help_and_contact_content(env):
     import json
     c = env["c"]
@@ -348,7 +382,7 @@ def test_help_and_contact_content(env):
     assert row.get("label") != "referral_points"
 
 
-# ── Personal invite links ─────────────────────────────────────────────────
+# â”€â”€ Personal invite links â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_invite_link_fills_in_code_after_install(env):
     c = env["c"]
     friend_phone = {"CF-Connecting-IP": "203.0.113.5"}
@@ -390,7 +424,7 @@ def test_signup_with_invite_code_links_referral(env):
     assert row["channel"] == "code" and row["status"] == "registered"
 
 
-# ── Feedback ──────────────────────────────────────────────────────────────
+# â”€â”€ Feedback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_feedback_reaches_admin(env):
     c = env["c"]
     assert c.post("/api/v1/feedback", json={"message": "Hi"}).status_code in (401, 403)
@@ -408,7 +442,7 @@ def test_feedback_reaches_admin(env):
     assert c.put(f"/api/v1/admin/feedback/{items[0]['id']}", headers=env["admin"], json={"status": "done"}).status_code == 400
 
 
-# ── Broker requests (Book a time / loan review) ───────────────────────────
+# â”€â”€ Broker requests (Book a time / loan review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_book_a_time_reaches_staff(env):
     import datetime
     c = env["c"]
@@ -428,7 +462,7 @@ def test_book_a_time_reaches_staff(env):
     assert r.status_code == 200 and r.json()["status"] == "contacted" and r.json()["staff_note"] == "Called Tue"
 
 
-# ── Phase 3: alerts, bonuses, loan check-ins, thank-yous ───────────────────
+# â”€â”€ Phase 3: alerts, bonuses, loan check-ins, thank-yous â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _setting(db, key, value):
     rows = db.tables["app_content"]
     row = next((r for r in rows if r["key"] == key), None)
@@ -519,13 +553,9 @@ def test_daily_job_reminders_birthdays_and_loan_checkin(env, monkeypatch):
     titles = [s[1] for s in sent]
     assert "See you tomorrow: Investor Night" in titles and "Happy birthday! +50 points" in titles
     assert member["total_points"] == points_before + 50
-    if member.get("loan_settled_on"):
-        assert summary["loan_checkins"] == 1 and "Is your loan still competitive?" in titles
-        assert c.get("/api/v1/broker/checkin", headers=env["member"]).json()["due"] is True
-        updates = c.get("/api/v1/notifications", headers=env["member"]).json()
-        assert any(u.get("type") == "loan_checkin" for u in updates)
-        c.post("/api/v1/broker/requests", headers=env["member"], json={"kind": "loan_review"})
-        assert c.get("/api/v1/broker/checkin", headers=env["member"]).json()["due"] is False
+    # The yearly loan check-in is switched off for launch.
+    assert summary["loan_checkins"] == 0 and "Is your loan still competitive?" not in titles
+    assert c.get("/api/v1/broker/checkin", headers=env["member"]).json()["due"] is False
 
     # A second run the same day sends and pays nothing again.
     n = len(sent)
@@ -575,7 +605,7 @@ def test_event_thank_you_reaches_attendees(env, monkeypatch):
     assert again.json()["notified"] == 0
 
 
-# ── Email via ZeptoMail ───────────────────────────────────────────────────
+# â”€â”€ Email via ZeptoMail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_emails_go_through_zeptomail(monkeypatch):
     import httpx
     import app.services.email_service as es
@@ -604,3 +634,104 @@ def test_emails_go_through_zeptomail(monkeypatch):
     # A refused send (e.g. no credits) is reported as not sent rather than crashing the request.
     monkeypatch.setattr(es.httpx, "post", lambda *a, **k: httpx.Response(429, json={"error": {"message": "Credit exhausted"}}))
     assert es.EmailService.send_event_thank_you("a@example.com", "Al", "Gala", "Thanks!", []) is False
+
+
+# â”€â”€ Launch feedback (test APK 3.2.0 review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def test_login_keeps_members_signed_in(env):
+    """Login hands out a long-lived backend token (Supabase's expires in an hour), and the
+    app can swap any valid token for a fresh one each time it opens."""
+    db, c = env["db"], env["c"]
+    db.auth.accounts["keep@example.com"] = ("Secret123!", "00000000-0000-4000-8000-0000000000e5", "Kim Lee")
+    tok = c.post("/api/v1/auth/login", json={"email": "keep@example.com", "password": "Secret123!"}).json()["access_token"]
+    claims = jwt.decode(tok, options={"verify_signature": False})
+    assert claims["iss"] == "rrc-backend" and claims["exp"] - claims["iat"] >= 86400 * 150
+    fresh = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {tok}"})
+    assert fresh.status_code == 200 and fresh.json()["access_token"]
+    assert c.post("/api/v1/auth/refresh").status_code in (401, 403)
+
+
+def test_welcome_points_follow_the_setting(env):
+    db, c = env["db"], env["c"]
+    _setting(db, "welcome_points", "250")
+    db.auth.accounts["newbie@example.com"] = ("Secret123!", "00000000-0000-4000-8000-0000000000f6", "New Bee")
+    tok = c.post("/api/v1/auth/login", json={"email": "newbie@example.com", "password": "Secret123!"}).json()["access_token"]
+    assert c.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"}).json()["total_points"] == 250
+    _setting(db, "welcome_points", "100")
+
+
+def test_admin_edits_tiers_and_intro(env):
+    c, a = env["c"], env["admin"]
+    tiers = c.get("/api/v1/admin/tiers", headers=a).json()
+    tiers[1]["benefits"] = "Everything in Silver\nPriority invites\nBirthday gift"
+    tiers.append({"name": "Diamond", "min_points": 20000, "benefits": "Everything in Platinum"})
+    r = c.put("/api/v1/admin/tiers", headers=a, json={"tiers": tiers})
+    assert r.status_code == 200, r.text
+    _setting(env["db"], "tiers_intro", "Earn more, unlock more.")
+    pub = c.get("/api/v1/tiers").json()
+    assert [t["name"] for t in pub["tiers"]] == ["Silver", "Gold", "Platinum", "Diamond"]
+    assert pub["tiers"][1]["benefits"][-1] == "Birthday gift" and pub["intro"] == "Earn more, unlock more."
+    assert c.put("/api/v1/admin/tiers", headers=a, json={"tiers": [{"name": "Gold", "min_points": 10}]}).status_code == 400
+    assert c.put("/api/v1/admin/tiers", headers=a, json={"tiers": tiers[:3]}).status_code == 200  # remove Diamond again
+    assert len(c.get("/api/v1/tiers").json()["tiers"]) == 3
+
+
+def test_email_invite_comes_from_no_reply(env, monkeypatch):
+    import app.services.email_service as es
+    c, h = env["c"], env["member"]
+    body = {"referred_name": "Zara Khan", "referred_email": "zara@example.com", "channel": "email", "consent_given": True}
+    # Email not set up yet: the app is told to open the member's own mail app instead.
+    assert c.post("/api/v1/referrals/", headers=h, json=body).json()["invite_emailed"] is False
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    r = c.post("/api/v1/referrals/", headers=h, json={**body, "referred_email": "zoe@example.com", "referred_name": "Zoe"})
+    assert r.json()["invite_emailed"] is True and emails[-1]["to"] == "zoe@example.com"
+    assert "MANOJ123" in emails[-1]["html"] and "Manoj Kumar invited you" in emails[-1]["subject"]
+
+
+def test_referral_three_stages(env):
+    c, a = env["c"], env["admin"]
+    rid = c.post("/api/v1/referrals/", headers=env["member"], json={
+        "referred_name": "Tom", "referred_mobile": "0499 000 111", "channel": "share", "consent_given": True}).json()["id"]
+    assert c.put(f"/api/v1/admin/referrals/{rid}/stage", headers=a, json={"status": "registered"}).status_code == 200
+    assert c.put(f"/api/v1/admin/referrals/{rid}/stage", headers=a, json={"status": "rewarded", "points": 30}).status_code == 200
+
+
+def test_event_points_range_and_rsvp_emails(env, monkeypatch):
+    import app.services.email_service as es
+    c, a, h = env["c"], env["admin"], env["member"]
+    bad = c.post("/api/v1/admin/events", headers=a, json={"title": "Gala", "event_date": "2030-05-01T09:00:00Z",
+                                                       "points_for_attending": 100, "points_for_attending_max": 50})
+    assert bad.status_code == 400
+    ev = c.post("/api/v1/admin/events", headers=a, json={
+        "title": "Gala", "description": "Dinner and awards", "location": "Sydney", "event_date": "2030-05-01T09:00:00Z",
+        "points_for_attending": 50, "points_for_attending_max": 150, "points_for_referring": 20,
+        "points_for_referring_max": 20}).json()
+    assert ev["points_for_attending_max"] == 150 and ev["points_for_referring_max"] is None  # equal = fixed amount
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    assert c.post(f"/api/v1/events/{ev['id']}/rsvp", headers=h).status_code == 200
+    assert emails[-1]["subject"] == "You're going: Gala" and emails[-1]["inline_images"][0]["cid"] == "rsvpqr"
+    assert "Wednesday 1 May 2030, 7 pm" in emails[-1]["html"]  # Sydney time
+    assert c.delete(f"/api/v1/events/{ev['id']}/rsvp", headers=h).status_code == 200
+    assert emails[-1]["subject"] == "RSVP cancelled: Gala"
+    r = c.post(f"/api/v1/events/{ev['id']}/invite-guests", headers=h, json=[{"guest_name": "Asha", "guest_email": "asha@example.com"}])
+    assert r.json()["emailed"] == 1 and emails[-1]["to"] == "asha@example.com" and "Dinner and awards" in emails[-1]["html"]
+
+
+def test_forgot_password_sends_our_own_email(env, monkeypatch):
+    import app.services.email_service as es
+    db = env["db"]
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+
+    class _Link:
+        properties = type("P", (), {"action_link": "https://example.supabase.co/auth/v1/verify?token=abc&type=recovery"})()
+    calls = []
+    monkeypatch.setattr(db.auth.admin, "generate_link", lambda attrs: calls.append(attrs) or _Link(), raising=False)
+    r = env["c"].post("/api/v1/auth/forgot-password", json={"email": "Manoj@Example.com"})
+    assert r.status_code == 200 and r.json()["success"]
+    assert calls[-1]["options"]["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
+    assert emails[-1]["to"] == "manoj@example.com" and "verify?token=abc" in emails[-1]["html"]

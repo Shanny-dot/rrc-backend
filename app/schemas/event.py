@@ -12,6 +12,10 @@ class EventBase(BaseModel):
     image_url: Optional[str] = None
     points_for_attending: int = 0
     points_for_referring: int = 0
+    # Optional top of a points range shown to members ("50–100 pts"); the amounts above
+    # are what is awarded automatically.
+    points_for_attending_max: Optional[int] = None
+    points_for_referring_max: Optional[int] = None
     capacity: Optional[int] = None
     is_active: bool = True
 
@@ -27,6 +31,8 @@ class EventUpdate(BaseModel):
     image_url: Optional[str] = None
     points_for_attending: Optional[int] = None
     points_for_referring: Optional[int] = None
+    points_for_attending_max: Optional[int] = None
+    points_for_referring_max: Optional[int] = None
     capacity: Optional[int] = None
     is_active: Optional[bool] = None
 

@@ -1,7 +1,7 @@
 """Daily job, run each morning by the GitHub Actions workflow .github/workflows/daily-jobs.yml.
 
-Sends event reminders for tomorrow, birthday and loan-anniversary bonuses, the yearly
-"Is your loan still competitive?" check-in, and points-expiry alerts (and expiry) when a
+Sends event reminders for tomorrow (phone alert and email), birthday and loan-anniversary
+bonuses, and points-expiry alerts (and expiry) when a
 points_expiry_months setting is in force. Every alert is logged, so running it twice in a
 day (e.g. a retry) never sends or pays anything twice."""
 import datetime
@@ -12,11 +12,13 @@ from app.core.supabase_client import supabase_admin
 from app.services import notify_service
 from app.services.bonus_service import BonusService
 from app.services.points_service import PointsService
-from app.services.program_service import get_int_setting, _parse_ts
+from app.services.program_service import get_int_setting, _parse_ts, event_when
+from app.services.email_service import EmailService
 
 router = APIRouter()
 
 PROGRAM_TZ = ZoneInfo("Australia/Sydney")
+LOAN_CHECKIN_ENABLED = False
 EXPIRY_NOTICE_DAYS = 30
 # Points that are "earned" and so can expire; refunds just give back spent points.
 _EARNING_TYPES = {"signup_bonus", "referral", "event_attend", "event_guest", "admin_adjustment", "bonus"}
@@ -62,11 +64,15 @@ def event_reminders(today: datetime.date) -> int:
         local = start.astimezone(PROGRAM_TZ)
         when = local.strftime("%I:%M %p").lstrip("0").replace(":00 ", " ").lower()
         body = f"Tomorrow at {when}" + (f" · {ev['location']}" if ev.get("location") else "")
-        rsvps = supabase_admin.table("event_rsvps").select("user_id, cancelled").eq("event_id", ev["id"]).execute().data or []
+        rsvps = supabase_admin.table("event_rsvps").select("user_id, cancelled, users(full_name, email)") \
+            .eq("event_id", ev["id"]).execute().data or []
         for r in rsvps:
             if not r.get("cancelled") and notify_service.notify_once(
                     r["user_id"], "event_reminder", str(ev["id"]), f"See you tomorrow: {ev['title']}", body, {"event_id": ev["id"]}):
                 sent += 1
+                member = r.get("users") or {}
+                if member.get("email"):
+                    EmailService.send_event_reminder(member["email"], member.get("full_name"), ev, event_when(ev))
     return sent
 
 
@@ -79,12 +85,15 @@ def birthdays_and_anniversaries(today: datetime.date, members: list) -> dict:
         settled = _date(m.get("loan_settled_on"))
         if settled and settled.year < today.year and _same_day(settled, today):
             years = today.year - settled.year
-            label = "a year" if years == 1 else f"{years} years"
-            if notify_service.notify_once(
-                    m["id"], "loan_checkin", str(today.year), "Is your loan still competitive?",
-                    f"It's been {label} since your home loan settled. Rates change — ask your broker for a free review.",
-                    {"years": years}):
-                out["loan_checkins"] += 1
+            # The yearly "Is your loan still competitive?" check-in is switched off for launch
+            # (the program isn't only about home loans). Turn it back on with LOAN_CHECKIN_ENABLED.
+            if LOAN_CHECKIN_ENABLED:
+                label = "a year" if years == 1 else f"{years} years"
+                if notify_service.notify_once(
+                        m["id"], "loan_checkin", str(today.year), "Is your loan still competitive?",
+                        f"It's been {label} since your home loan settled. Rates change — ask your broker for a free review.",
+                        {"years": years}):
+                    out["loan_checkins"] += 1
             if BonusService.loan_anniversary(m["id"], today.year, years):
                 out["anniversary_bonuses"] += 1
     return out

@@ -29,7 +29,8 @@ COLUMNS = {
               "profile_complete", "referral_code", "referred_by", "is_admin", "fcm_token", "created_at", "deleted_at",
               "loan_settled_on", "notification_prefs"],
     "events": ["id", "title", "description", "location", "event_date", "image_url", "points_for_attending",
-               "points_for_referring", "capacity", "is_active", "created_at", "category", "thank_you_sent_at"],
+               "points_for_referring", "capacity", "is_active", "created_at", "category", "thank_you_sent_at",
+               "points_for_attending_max", "points_for_referring_max"],  # 008
     "rewards": ["id", "title", "description", "category", "points_required", "image_url", "stock", "is_active",
                 "created_at", "what_you_get", "delivery_info", "expiry_info", "terms", "dollar_value"],
     "redemptions": ["id", "user_id", "reward_id", "status", "points_used", "admin_note", "requested_at",
@@ -65,7 +66,7 @@ DEFAULTS = {
 CHECKS = {
     "transactions": {"type": {"signup_bonus", "referral", "event_attend", "event_guest", "redemption",
                               "redemption_refund", "admin_adjustment", "bonus", "points_expired"}},
-    "redemptions": {"status": {"pending", "approved", "sent", "rejected"}},
+    "redemptions": {"status": {"pending", "in_progress", "approved", "sent", "rejected"}},
     "feedback": {"status": {"new", "read", "resolved"}},
     "loan_reviews": {"status": {"new", "contacted", "closed"}},
     "referrals": {"status": {"pending", "invited", "registered", "contacted", "loan_in_progress", "settled",

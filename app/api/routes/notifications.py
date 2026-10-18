@@ -11,7 +11,7 @@ REFERRAL_STAGE_TEXT = {
     "loan_in_progress": "{name}'s loan is in progress.",
     "settled": "{name}'s loan has settled. Your points are on the way.",
     "rewarded": "You earned points for referring {name}.",
-    "registered": "{name} joined Reliance Rewards.",
+    "registered": "{name} has signed up to Reliance Rewards.",
 }
 
 LOGGED_KINDS = {"loan_checkin": "loan", "points_expiring": "points", "event_thanks": "event"}
@@ -42,6 +42,9 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
         .eq("user_id", user_id).execute().data or []
     for r in reds:
         title = (r.get("rewards") or {}).get("title") or "Your reward"
+        if r.get("status") == "in_progress" and r.get("actioned_at"):
+            items.append({"id": f"red-wip-{r['id']}", "kind": "reward", "title": f"{title} in progress",
+                          "body": "Our team is working on your reward.", "at": r["actioned_at"]})
         if r.get("status") == "sent" and r.get("sent_at"):
             items.append({"id": f"red-sent-{r['id']}", "kind": "reward", "title": f"{title} has been sent",
                           "body": "Check your email for your reward.", "at": r["sent_at"]})

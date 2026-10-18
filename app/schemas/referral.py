@@ -3,8 +3,8 @@ from typing import Optional
 from datetime import datetime
 import uuid
 
-# How the member sent the invite. sms/whatsapp/share/email are sent from the member's own
-# phone (share sheet or mail app); form/contacts are sent by the backend's invite email.
+# How the member sent the invite. sms/whatsapp/share are sent from the member's own phone
+# (share sheet); email/form/contacts get the backend's invite email from no-reply.
 REFERRAL_CHANNELS = {"sms", "whatsapp", "share", "email", "form", "contacts", "code"}
 
 class ReferralCreate(BaseModel):
@@ -29,6 +29,7 @@ class ReferralInDB(BaseModel):
     stage_updated_at: Optional[datetime] = None
     notes: Optional[str] = None
     created_at: datetime
+    invite_emailed: Optional[bool] = None  # only on create: true when we emailed the invitation
 
 class ReferralStageUpdate(BaseModel):
     status: str

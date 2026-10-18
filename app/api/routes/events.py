@@ -5,7 +5,8 @@ from app.core.auth_middleware import get_current_user
 from app.schemas.event import EventInDB, RSVPInDB, GuestCreate
 from app.services.qr_service import QRService
 from app.services.email_service import EmailService
-from app.services import notify_service
+from app.services import notify_service, invite_service
+from app.services.program_service import event_when
 import uuid
 
 router = APIRouter()
@@ -63,6 +64,10 @@ def rsvp_event(id: str, current_user: dict = Depends(get_current_user)):
          if existing.data[0].get("cancelled"):
               restored = supabase_admin.table("event_rsvps").update({"cancelled": False, "cancelled_at": None}) \
                    .eq("id", existing.data[0]["id"]).execute()
+              member = _member(user_id)
+              if member.get("email"):
+                   qr_png = QRService.generate_qr_base64(existing.data[0]["qr_token"]).split(",", 1)[-1]
+                   EmailService.send_rsvp_confirmation(member["email"], member.get("full_name"), event, event_when(event), qr_png)
               return restored.data[0]
          raise HTTPException(status_code=400, detail="You have already RSVP'd to this event")
 
@@ -80,36 +85,33 @@ def rsvp_event(id: str, current_user: dict = Depends(get_current_user)):
     if not rsvp_resp.data:
          raise HTTPException(status_code=500, detail="Failed to RSVP")
 
-    # 5. Generate QR Image & Send Email
-    user_resp = supabase_admin.table("users").select("email").eq("id", user_id).single().execute()
-    user_email = user_resp.data["email"] if user_resp.data else None
-
-    if user_email:
-         qr_base64 = QRService.generate_qr_base64(qr_token)
-         # Format date for email simply
-         event_date_str = str(event["event_date"])
-         EmailService.send_rsvp_confirmation(
-              to_email=user_email,
-              event_name=event["title"],
-              event_date=event_date_str,
-              event_location=event["location"],
-              qr_base64=qr_base64
-         )
+    # 5. Confirmation email with the member's RSVP QR code
+    member = _member(user_id)
+    if member.get("email"):
+         qr_png = QRService.generate_qr_base64(qr_token).split(",", 1)[-1]
+         EmailService.send_rsvp_confirmation(member["email"], member.get("full_name"), event, event_when(event), qr_png)
 
     return rsvp_resp.data[0]
+
+
+def _member(user_id: str) -> dict:
+    rows = supabase_admin.table("users").select("full_name, email").eq("id", user_id).execute().data or []
+    return rows[0] if rows else {}
 
 @router.post("/{id}/invite-guests")
 def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
 
     # 1. Get Event and Inviter Details
-    event_resp = supabase_admin.table("events").select("title").eq("id", id).single().execute()
+    event_resp = supabase_admin.table("events").select("*").eq("id", id).execute()
     if not event_resp.data:
          raise HTTPException(status_code=404, detail="Event not found")
-    event_title = event_resp.data["title"]
+    event = event_resp.data[0]
 
-    user_resp = supabase_admin.table("users").select("full_name").eq("id", user_id).single().execute()
-    inviter_name = user_resp.data["full_name"] if user_resp.data else "A Friend"
+    user_resp = supabase_admin.table("users").select("full_name, referral_code").eq("id", user_id).execute()
+    inviter = user_resp.data[0] if user_resp.data else {}
+    inviter_name = inviter.get("full_name") or "A friend"
+    invite_link = invite_service.personal_link(inviter.get("referral_code")) or None
 
     # 2. Check if user RSVP'd
     rsvp_resp = supabase_admin.table("event_rsvps").select("id").eq("event_id", id).eq("user_id", user_id).execute()
@@ -128,6 +130,7 @@ def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depen
 
     # 3. Insert Guests and send emails
     inserted_guests = []
+    emailed = 0
     for guest in guests:
          guest_data = {
               "rsvp_id": rsvp_id,
@@ -140,15 +143,12 @@ def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depen
          if res.data:
              inserted_guests.append(res.data[0])
 
-             # Send Invite Email if email exists
-             if guest.guest_email:
-                  EmailService.send_guest_invite(
-                       to_email=guest.guest_email,
-                       inviter_name=inviter_name,
-                       event_name=event_title
-                  )
+             # Invitation email from no-reply
+             if guest.guest_email and EmailService.send_guest_invite(
+                       guest.guest_email, inviter_name, event, event_when(event), guest.guest_name, invite_link):
+                  emailed += 1
 
-    return {"message": f"Successfully invited {len(inserted_guests)} guests", "guests": inserted_guests}
+    return {"message": f"Successfully invited {len(inserted_guests)} guests", "guests": inserted_guests, "emailed": emailed}
 
 @router.post("/{id}/scan-attendance")
 def scan_attendance(id: str, current_user: dict = Depends(get_current_user)):
@@ -237,4 +237,7 @@ def cancel_rsvp(id: str, current_user: dict = Depends(get_current_user)):
     supabase_admin.table("event_rsvps").update({
         "cancelled": True, "cancelled_at": _dt.datetime.now(_dt.timezone.utc).isoformat()
     }).eq("id", rsvp.data[0]["id"]).execute()
+    member = _member(user_id)
+    if member.get("email"):
+        EmailService.send_rsvp_cancelled(member["email"], member.get("full_name"), event_resp.data[0], event_when(event_resp.data[0]))
     return {"message": "RSVP cancelled"}

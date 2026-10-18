@@ -17,7 +17,8 @@ limiter = Limiter(key_func=client_ip)
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Australian mobile: 04XXXXXXXX, 4XXXXXXXX or +614XXXXXXXX (spaces/dashes ignored)
 _AU_MOBILE_RE = re.compile(r"^(?:\+?61|0)?4\d{8}$")
-_SELF_SENT = {"sms", "whatsapp", "share", "email"}
+# Sent from the member's own phone (share sheet), so not emailed again.
+_SELF_SENT = {"sms", "whatsapp", "share"}
 
 
 def _normalise_mobile(mobile: str) -> str:
@@ -83,15 +84,18 @@ def create_referral(referral: ReferralCreate, current_user: dict = Depends(get_c
     if not resp.data:
         raise HTTPException(status_code=500, detail="Failed to create referral record")
 
-    # Invites the member sends from their own phone or mail app aren't emailed again.
+    # The invitation email comes from no-reply. The app opens the member's own mail app
+    # instead when invite_emailed is false (email not set up yet).
+    emailed = False
     if email and channel not in _SELF_SENT:
-        EmailService.send_referral_invite(
+        emailed = EmailService.send_referral_invite(
             to_email=email,
             inviter_name=inviter.get("full_name") or "A friend",
             referral_code=inviter.get("referral_code"),
             invite_link=invite_service.personal_link(inviter.get("referral_code")) or None,
+            friend_name=name,
         )
-    return resp.data[0]
+    return {**resp.data[0], "invite_emailed": bool(emailed)}
 
 
 @router.get("/", response_model=List[ReferralInDB])

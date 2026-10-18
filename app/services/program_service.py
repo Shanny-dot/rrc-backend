@@ -1,6 +1,42 @@
 """Program settings, tiers and member activity helpers shared by several routes."""
 import datetime
+import json
+from zoneinfo import ZoneInfo
 from app.core.supabase_client import supabase_admin
+
+PROGRAM_TZ = ZoneInfo("Australia/Sydney")
+
+# Reward request statuses, in order. Members see the label in the app; each change of
+# status emails the member the subject/message below. Staff edit all of it on the admin
+# website (Redemptions → Status wording). {reward} {points} {balance} {reference} are filled in.
+REDEMPTION_STATUSES = ["pending", "in_progress", "approved", "sent", "rejected"]
+REDEMPTION_STATUS_DEFAULTS = {
+    "pending": {
+        "label": "Pending",
+        "subject": "We've received your reward request ({reference})",
+        "message": "Thanks for redeeming {reward}! We've received your request and {points} points have been taken from your balance.\nWe'll email you as soon as it moves to the next step.",
+    },
+    "in_progress": {
+        "label": "In progress",
+        "subject": "Your reward request is in progress",
+        "message": "Good news — our team is now working on your {reward}.\nWe'll let you know as soon as it's approved.",
+    },
+    "approved": {
+        "label": "Approved",
+        "subject": "Your reward has been approved",
+        "message": "Your request for {reward} has been approved.\nWe'll be in touch with the details shortly.",
+    },
+    "sent": {
+        "label": "Sent",
+        "subject": "Your {reward} is on its way",
+        "message": "Your {reward} has been sent. Enjoy!",
+    },
+    "rejected": {
+        "label": "Rejected",
+        "subject": "Update on your reward request",
+        "message": "Unfortunately we couldn't complete your request for {reward}.\nThe {points} points have been returned to your account.",
+    },
+}
 
 SETTING_DEFAULTS = {
     "referral_points": "0",
@@ -13,6 +49,10 @@ SETTING_DEFAULTS = {
     "android_store_url": "https://play.google.com/store/apps/details?id=com.rrc.app",
     "update_message": "",
     "invite_base_url": "https://rrc-admin.vercel.app/join",
+    "welcome_points": "100",
+    "contact_card_title": "Contact us",
+    "tiers_intro": "",
+    "redemption_statuses": json.dumps(REDEMPTION_STATUS_DEFAULTS),
 }
 
 # Points that count towards "lifetime earned": everything except redemptions and their refunds.
@@ -107,8 +147,31 @@ def _parse_ts(value):
         return None
 
 
-def redemption_status_label(status: str) -> str:
-    return {"pending": "Pending", "approved": "Approved", "sent": "Sent", "rejected": "Refunded"}.get(status or "", "Pending")
+def redemption_templates() -> dict:
+    """{status: {label, subject, message}} with staff edits over the defaults."""
+    try:
+        saved = json.loads(get_setting("redemption_statuses") or "{}")
+    except ValueError:
+        saved = {}
+    out = {}
+    for status, default in REDEMPTION_STATUS_DEFAULTS.items():
+        mine = saved.get(status) if isinstance(saved.get(status), dict) else {}
+        out[status] = {k: (str(mine.get(k)).strip() if mine.get(k) else v) for k, v in default.items()}
+    return out
+
+
+def redemption_status_label(status: str, templates: dict = None) -> str:
+    templates = templates or redemption_templates()
+    return templates.get(status or "pending", templates["pending"])["label"]
+
+
+def event_when(event: dict) -> str:
+    """'Tuesday 4 November 2026, 6:30 pm' in Sydney time."""
+    start = _parse_ts(event.get("event_date"))
+    if not start:
+        return "Date to be confirmed"
+    local = start.astimezone(PROGRAM_TZ)
+    return f"{local:%A} {local.day} {local:%B %Y}, " + local.strftime("%I:%M %p").lstrip("0").replace(":00 ", " ").lower()
 
 
 def activity_for_user(user_id: str) -> list:
@@ -121,6 +184,7 @@ def activity_for_user(user_id: str) -> list:
     reds = supabase_admin.table("redemptions").select("id, status, points_used, requested_at").eq("user_id", user_id).execute().data or []
     by_id = {r["id"]: r for r in reds}
     unmatched = list(reds)
+    templates = redemption_templates()
 
     out = []
     for t in tx:
@@ -143,9 +207,9 @@ def activity_for_user(user_id: str) -> list:
                 if red in unmatched:
                     unmatched.remove(red)
                 item["redemption_id"] = red["id"]
-                status = redemption_status_label(red.get("status"))
+                status = redemption_status_label(red.get("status"), templates)
             else:
-                status = "Pending"
+                status = templates["pending"]["label"]
         elif ttype == "redemption_refund":
             status = "Refunded"
         elif ttype in ("admin_adjustment", "admin_award", "admin_deduct"):

@@ -15,7 +15,10 @@ DEFAULTS = {
     "quick_action_events": "Events",
     "announcement_banner": "",
     "announcement_active": "false",
-    # Help & contact page and "Talk to my broker" buttons (edited on the admin Help & Contact page)
+    # Help & contact page and the "Contact us" card (edited on the admin Help & Contact page)
+    "contact_card_title": "Contact us",
+    "tiers_intro": "",
+    "welcome_points": "100",
     "contact_name": "Your Reliance broker",
     "contact_phone": "",
     "contact_email": "",
@@ -46,6 +49,9 @@ DEFAULT_LABELS = {
     "quick_action_events": "Quick Action: Events Label",
     "announcement_banner": "Announcement Banner Text",
     "announcement_active": "Show Announcement Banner",
+    "contact_card_title": "Contact card title on Home",
+    "tiers_intro": "Intro text on the member tiers page",
+    "welcome_points": "Welcome points for new members",
     "contact_name": "Contact: name shown on the broker card",
     "contact_phone": "Contact: phone number",
     "contact_email": "Contact: email address",

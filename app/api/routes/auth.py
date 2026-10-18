@@ -10,7 +10,7 @@ from app.core.apple_auth import verify_apple_identity_token
 from app.core.social_verify import (
     google_enabled, facebook_enabled, verify_google_id_token, verify_facebook_access_token,
 )
-from app.services.program_service import tier_status
+from app.services.program_service import tier_status, get_int_setting
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
@@ -54,6 +54,26 @@ def generate_referral_code(length=8):
     characters = string.ascii_uppercase + string.digits
     return ''.join(random.choice(characters) for i in range(length))
 
+
+def _award_welcome_points(user_id: str, label: str = "") -> int:
+    """Welcome points for a brand-new member (amount set on the admin Program settings page)."""
+    points = get_int_setting("welcome_points")
+    if points <= 0:
+        return 0
+    try:
+        PointsService.award_points(user_id=user_id, points=points, type="signup_bonus", description="Welcome Bonus")
+        supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
+        return points
+    except Exception as e:
+        print(f"Welcome bonus warning {label}: {e}")
+        return 0
+
+
+def _welcome_new_member(user_id: str, email: str, full_name: str, referral_code: str, label: str = "") -> None:
+    points = _award_welcome_points(user_id, label)
+    if email:
+        EmailService.send_welcome_email(email, full_name, referral_code, points)
+
 def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
     """Make sure a signed-in Supabase account has its public.users member profile.
 
@@ -80,11 +100,7 @@ def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
         "referral_code": generate_referral_code(),
         "profile_complete": False,
     }).execute()
-    try:
-        PointsService.award_points(user_id=user_id, points=100, type="signup_bonus", description="Welcome Bonus")
-        supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
-    except Exception as e:
-        print(f"Welcome bonus warning (profile repair): {e}")
+    _award_welcome_points(user_id, "(profile repair)")
     return user_id
 
 
@@ -99,18 +115,15 @@ def _sign_in_social_member(email: str, full_name: str, provider: str, referral_c
         user_id = existing.data[0]["id"]
     else:
         user_id = str(uuid.uuid4())
+        code = generate_referral_code()
         supabase_admin.table("users").insert({
             "id": user_id,
             "email": email,
             "full_name": (full_name or email.split("@")[0]).strip(),
-            "referral_code": generate_referral_code(),
+            "referral_code": code,
             "profile_complete": False,
         }).execute()
-        try:
-            PointsService.award_points(user_id=user_id, points=100, type="signup_bonus", description="Welcome Bonus")
-            supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
-        except Exception as e:
-            print(f"Welcome bonus warning ({provider}): {e}")
+        _welcome_new_member(user_id, email, full_name, code, f"({provider})")
         if referral_code:
             link_new_member(user_id, referral_code, full_name, email=email)
     token = issue_app_token(user_id, email)
@@ -161,14 +174,13 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False
                 }).execute()
+                _welcome_new_member(user.id, user.email, full_name, ref_code, f"({creds.provider})")
                 if creds.referral_code:
                     link_new_member(user.id, creds.referral_code, full_name, email=user.email)
 
-            return {
-                "access_token": session.access_token,
-                "refresh_token": session.refresh_token,
-                "token_type": "bearer"
-            }
+            # Long-lived backend token, so the member stays signed in (Supabase's expires in an hour).
+            token = issue_app_token(str(user.id), user.email)
+            return {"access_token": token, "refresh_token": token, "token_type": "bearer"}
     except Exception as e:
         print(f"Supabase social login attempt failed: {e}")
 
@@ -199,6 +211,7 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False
                 }).execute()
+                _welcome_new_member(user_id, claims.get("email"), "", ref_code, "(apple)")
                 if creds.referral_code:
                     link_new_member(user_id, creds.referral_code, "Apple User", email=apple_email)
 
@@ -277,17 +290,8 @@ def register(request: Request, creds: RegisterCredentials):
         except Exception as otp_err:
             print(f"SMS OTP trigger skipped/error: {otp_err}")
 
-        # 6. Award 100 pt Signup Bonus
-        try:
-            PointsService.award_points(
-                user_id=user.id,
-                points=100,
-                type="signup_bonus",
-                description="Welcome Bonus"
-            )
-            supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user.id).execute()
-        except Exception as pts_err:
-            print(f"Points award warning: {pts_err}")
+        # 6. Welcome points (amount set on the admin Program settings page) and welcome email
+        _welcome_new_member(user.id, creds.email, creds.full_name, unique_ref_code, "(register)")
 
         return TokenResponse(access_token="pending_verification")
 
@@ -357,11 +361,24 @@ def login(request: Request, creds: LoginCredentials):
     user = auth_response.user or auth_response.session.user
     meta = getattr(user, "user_metadata", None) or {}
     member_id = _ensure_profile(str(user.id), user.email or clean_email, meta.get("full_name", ""))
-    if member_id != str(user.id):
-        # Profile is stored under a different id than the Supabase account: use a backend
-        # token for that member so every screen finds the right profile.
-        return TokenResponse(access_token=issue_app_token(member_id, user.email or clean_email))
-    return TokenResponse(access_token=auth_response.session.access_token)
+    # A long-lived backend token (also for the profile's own id), so members stay signed in:
+    # Supabase's session token expires after an hour and the app has no way to renew it.
+    return TokenResponse(access_token=issue_app_token(member_id, user.email or clean_email))
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_token(current_user: dict = Depends(get_current_user)):
+    """Swap any valid sign-in token for a fresh long-lived one. The app calls this on start,
+    so a member who opens the app now and then is never signed out."""
+    return TokenResponse(access_token=issue_app_token(current_user["sub"], current_user.get("email")))
+
+
+def _site_origin() -> str:
+    """https://host of the admin website (FRONTEND_URL may point at a page such as /login)."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(str(settings.FRONTEND_URL))
+    return f"{parts.scheme}://{parts.netloc}"
+
 
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordRequest):
@@ -369,15 +386,31 @@ def forgot_password(req: ForgotPasswordRequest):
     if not email:
         raise HTTPException(status_code=400, detail="Email address is required")
 
+    sent_message = {"success": True, "message": "If an account exists with this email, password reset instructions have been sent."}
+    # The link opens the "Set a new password" page on the admin site, which works
+    # on any phone or computer (the app itself has no reset screen).
+    redirect_to = f"{_site_origin()}/reset-password"
+    from app.services.email_service import _EMAIL_ENABLED
+    if _EMAIL_ENABLED:
+        # Our own email from no-reply (branded), with a link made by Supabase.
+        try:
+            member = supabase_admin.table("users").select("full_name, deleted_at").eq("email", email).execute().data or []
+            if member and member[0].get("deleted_at"):
+                return sent_message
+            link = supabase_admin.auth.admin.generate_link(
+                {"type": "recovery", "email": email, "options": {"redirect_to": redirect_to}})
+            action_link = link.properties.action_link
+            if EmailService.send_password_reset(email, member[0].get("full_name") if member else "", action_link):
+                return sent_message
+        except Exception as e:
+            # Unknown email addresses land here too; the reply is the same either way.
+            print("Forgot password (own email) note:", e)
+    # Fallback: Supabase's own reset email.
     try:
-        # The link opens the "Set a new password" page on the admin site, which works
-        # on any phone or computer (the app itself has no reset screen).
-        redirect_to = f"{str(settings.FRONTEND_URL).rstrip('/')}/reset-password"
         supabase_anon.auth.reset_password_for_email(email, {"redirect_to": redirect_to})
-        return {"success": True, "message": "Password reset instructions sent to your email address."}
     except Exception as e:
         print("Forgot password error:", e)
-        return {"success": True, "message": "If an account exists with this email, password reset instructions have been sent."}
+    return sent_message
 
 @router.get("/me")
 def get_me(current_user: dict = Depends(get_current_user)):
@@ -400,7 +433,12 @@ def get_me(current_user: dict = Depends(get_current_user)):
 def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
 
-    update_data = {k: v for k, v in profile.dict(exclude_unset=True).items()}
+    # mode="json" turns the date of birth into "YYYY-MM-DD"; a Python date can't be sent to
+    # the database and made every save that included a date of birth fail.
+    update_data = profile.model_dump(mode="json", exclude_unset=True)
+    for key in ("full_name", "mobile"):
+        if key in update_data and not (update_data[key] or "").strip():
+            update_data.pop(key)  # never blank out the name or mobile by accident
 
     if update_data:
          # Automatically mark profile as completed when profile details are saved

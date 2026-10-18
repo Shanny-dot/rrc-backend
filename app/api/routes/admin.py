@@ -10,7 +10,8 @@ from app.services.email_service import EmailService
 from app.services import notify_service
 from app.services.bonus_service import BonusService
 from app.schemas.referral import ReferralStageUpdate
-from app.services.program_service import get_int_setting
+from app.services.program_service import get_int_setting, redemption_templates, REDEMPTION_STATUSES
+from app.services import redemption_service
 import datetime
 import json
 import os
@@ -151,11 +152,26 @@ def list_all_events():
     resp = supabase_admin.table("events").select("*").order("event_date", desc=False).execute()
     return resp.data
 
+def _check_points_range(data: dict, current: dict = None):
+    """A range's top must be above its starting points; an empty or equal top means a fixed amount."""
+    for base_key, max_key, label in (("points_for_attending", "points_for_attending_max", "attending"),
+                                     ("points_for_referring", "points_for_referring_max", "bringing a friend")):
+        if max_key not in data:
+            continue
+        top = data.get(max_key)
+        base = data.get(base_key, (current or {}).get(base_key)) or 0
+        if top in (None, 0) or top == base:
+            data[max_key] = None
+        elif top < base:
+            raise HTTPException(status_code=400, detail=f"The 'up to' points for {label} must be more than the starting points.")
+
+
 @router.post("/events", response_model=EventInDB)
 def create_event(event: EventCreate):
     # Image upload to supabase storage should be handled by a separate script or directly from frontend to storage,
     # and then the URL is passed here in `event.image_url`. Just taking the URL for now.
     insert_data = json.loads(event.json())
+    _check_points_range(insert_data)
     resp = supabase_admin.table("events").insert(insert_data).execute()
     if not resp.data:
          raise HTTPException(status_code=500, detail="Failed to create event")
@@ -164,6 +180,8 @@ def create_event(event: EventCreate):
 @router.put("/events/{id}", response_model=EventInDB)
 def update_event(id: str, event: EventUpdate):
     update_data = json.loads(event.json(exclude_unset=True))
+    current = supabase_admin.table("events").select("*").eq("id", id).execute().data or [{}]
+    _check_points_range(update_data, current[0])
     resp = supabase_admin.table("events").update(update_data).eq("id", id).execute()
     if not resp.data:
          raise HTTPException(status_code=404, detail="Event not found")
@@ -209,89 +227,65 @@ def list_redemptions():
     resp = supabase_admin.table("redemptions").select("*, users(full_name, email), rewards(title, points_required)").order("requested_at", desc=True).execute()
     return resp.data
 
+# Which status a reward request can move to from each status.
+REDEMPTION_MOVES = {
+    "pending": {"in_progress", "approved", "rejected", "sent"},
+    "in_progress": {"approved", "rejected", "sent"},
+    "approved": {"sent"},
+    "sent": set(),
+    "rejected": set(),
+}
+
+
+def _set_redemption_status(id: str, status: str, note: str = None) -> dict:
+    """Moves a reward request on, refunds points when rejected, and emails/alerts the member."""
+    rows = supabase_admin.table("redemptions").select("*, rewards(title)").eq("id", id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Redemption not found")
+    redemption = rows[0]
+    current = redemption.get("status") or "pending"
+    if status not in REDEMPTION_MOVES:
+        raise HTTPException(status_code=400, detail="Unknown status.")
+    if status not in REDEMPTION_MOVES.get(current, set()):
+        raise HTTPException(status_code=400, detail=f"This request is already {current.replace('_', ' ')} and can't be moved to {status.replace('_', ' ')}.")
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    update = {"status": status, "actioned_at": now}
+    if status == "sent":
+        update["sent_at"] = now
+        if redemption.get("actioned_at"):
+            update.pop("actioned_at")
+    note = (note or "").strip() or None
+    if note:
+        update["admin_note"] = note
+    supabase_admin.table("redemptions").update(update).eq("id", id).execute()
+
+    if status == "rejected":
+        title = (redemption.get("rewards") or {}).get("title") or "reward"
+        PointsService.award_points(
+            user_id=redemption["user_id"], points=redemption["points_used"], type="redemption_refund",
+            description=f"Refund for rejected redemption: {title}")
+        rew = supabase_admin.table("rewards").select("stock").eq("id", redemption["reward_id"]).execute().data
+        if rew and rew[0].get("stock") is not None:
+            supabase_admin.table("rewards").update({"stock": rew[0]["stock"] + 1}).eq("id", redemption["reward_id"]).execute()
+
+    redemption_service.notify_status(id, status, note)
+    return {"message": f"Redemption {status.replace('_', ' ')}", "status": status}
+
+
+@router.put("/redemptions/{id}/status")
+def update_redemption_status(id: str, status: str = Body(..., embed=True), admin_note: str = Body(None, embed=True)):
+    return _set_redemption_status(id, (status or "").strip().lower(), admin_note)
+
+
 @router.put("/redemptions/{id}/approve")
 def approve_redemption(id: str):
-    red_resp = supabase_admin.table("redemptions").select("*, users(email, fcm_token), rewards(title)").eq("id", id).single().execute()
-    if not red_resp.data:
-         raise HTTPException(status_code=404, detail="Redemption not found")
+    return _set_redemption_status(id, "approved")
 
-    redemption = red_resp.data
-    if redemption["status"] != "pending":
-         raise HTTPException(status_code=400, detail="Redemption is not pending")
-
-    # 1. Update Status
-    now = datetime.datetime.utcnow().isoformat()
-    supabase_admin.table("redemptions").update({"status": "approved", "actioned_at": now}).eq("id", id).execute()
-
-    # 2. Points were already deducted on request. Log a separate success context if needed, but standard is fine.
-
-    # 3. Notification
-    user_email = redemption["users"]["email"] if redemption.get("users") else None
-    if user_email:
-         # Need remaining balance:
-         user_resp = supabase_admin.table("users").select("total_points").eq("id", redemption["user_id"]).single().execute()
-         bal = user_resp.data["total_points"] if user_resp.data else 0
-
-         EmailService.send_redemption_approved(
-              to_email=user_email,
-              reward_name=redemption["rewards"]["title"],
-              points_used=redemption["points_used"],
-              remaining_balance=bal
-         )
-
-    notify_service.push(redemption["user_id"], "reward", "Reward approved",
-                        f"We're preparing your {redemption['rewards']['title']}.", {"redemption_id": id})
-    return {"message": "Redemption approved"}
 
 @router.put("/redemptions/{id}/reject")
 def reject_redemption(id: str, req: RedemptionRejectRequest):
-    red_resp = supabase_admin.table("redemptions").select("*, users(email, fcm_token), rewards(title)").eq("id", id).single().execute()
-    if not red_resp.data:
-         raise HTTPException(status_code=404, detail="Redemption not found")
-
-    redemption = red_resp.data
-    if redemption["status"] != "pending":
-         raise HTTPException(status_code=400, detail="Redemption is not pending")
-
-    # 1. Update Status
-    now = datetime.datetime.utcnow().isoformat()
-    supabase_admin.table("redemptions").update({
-        "status": "rejected", 
-        "admin_note": req.admin_note,
-        "actioned_at": now
-    }).eq("id", id).execute()
-
-    # 2. Refund Points
-    PointsService.award_points(
-         user_id=redemption["user_id"],
-         points=redemption["points_used"],
-         type="redemption_refund",
-         description=f"Refund for rejected redemption: {redemption['rewards']['title']}"
-    )
-
-    # 3. Increase Stock back
-    reward_id = redemption["reward_id"]
-    rew_resp = supabase_admin.table("rewards").select("stock").eq("id", reward_id).single().execute()
-    if rew_resp.data and rew_resp.data.get("stock") is not None:
-         supabase_admin.table("rewards").update({"stock": rew_resp.data["stock"] + 1}).eq("id", reward_id).execute()
-
-    # 4. Notification
-    user_email = redemption["users"]["email"] if redemption.get("users") else None
-    if user_email:
-         user_resp = supabase_admin.table("users").select("total_points").eq("id", redemption["user_id"]).single().execute()
-         bal = user_resp.data["total_points"] if user_resp.data else 0
-
-         EmailService.send_redemption_rejected(
-              to_email=user_email,
-              reward_name=redemption["rewards"]["title"],
-              refund_note=req.admin_note,
-              remaining_balance=bal
-         )
-
-    notify_service.push(redemption["user_id"], "reward", f"{redemption['rewards']['title']} couldn't be processed",
-                        f"Your {redemption['points_used']} points have been refunded.", {"redemption_id": id})
-
-    return {"message": "Redemption rejected"}
+    return _set_redemption_status(id, "rejected", req.admin_note)
 
 @router.post("/events/scan-qr")
 def scan_qr(req: QRScanRequest):
@@ -348,33 +342,80 @@ def admin_list_transactions(user_id: str = None):
 
 @router.put("/redemptions/{id}/sent")
 def mark_redemption_sent(id: str, body: dict = Body(default={})):
-    """Mark an approved (or pending) redemption as sent to the member."""
-    red_resp = supabase_admin.table("redemptions").select("*, users(email, fcm_token), rewards(title)").eq("id", id).execute()
-    if not red_resp.data:
-        raise HTTPException(status_code=404, detail="Redemption not found")
-    redemption = red_resp.data[0]
-    if redemption["status"] == "rejected":
-        raise HTTPException(status_code=400, detail="A rejected redemption can't be marked as sent")
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    update = {"status": "sent", "sent_at": now_iso}
-    if not redemption.get("actioned_at"):
-        update["actioned_at"] = now_iso
-    note = (body or {}).get("admin_note")
-    if note:
-        update["admin_note"] = note
-    supabase_admin.table("redemptions").update(update).eq("id", id).execute()
-
-    reward_title = (redemption.get("rewards") or {}).get("title") or "Your reward"
-    user = redemption.get("users") or {}
-    if user.get("email"):
-        EmailService.send_redemption_sent(to_email=user["email"], reward_name=reward_title, note=note)
-    notify_service.push(redemption["user_id"], "reward", "Your reward is on its way",
-                        f"{reward_title} has been sent. Check your email.", {"redemption_id": id})
-    return {"message": "Marked as sent"}
+    """Mark a redemption as sent to the member (optional note, e.g. a gift card code)."""
+    return _set_redemption_status(id, "sent", (body or {}).get("admin_note"))
 
 
-REFERRAL_STAGES = ["invited", "contacted", "loan_in_progress", "settled", "rewarded", "closed"]
+@router.get("/redemption-statuses")
+def get_redemption_statuses():
+    """Status names and the email sent for each, as edited on the Redemptions page."""
+    return {"order": REDEMPTION_STATUSES, "statuses": redemption_templates()}
+
+
+@router.put("/redemption-statuses")
+def save_redemption_statuses(statuses: dict = Body(..., embed=True)):
+    clean = {}
+    for key in REDEMPTION_STATUSES:
+        item = statuses.get(key) or {}
+        label = str(item.get("label") or "").strip()
+        if not label:
+            raise HTTPException(status_code=400, detail="Every status needs a name.")
+        clean[key] = {"label": label[:40], "subject": str(item.get("subject") or "").strip()[:150],
+                      "message": str(item.get("message") or "").strip()[:2000]}
+    supabase_admin.table("app_content").upsert({
+        "key": "redemption_statuses", "value": json.dumps(clean), "label": "Reward status names and emails (JSON)",
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }).execute()
+    return {"order": REDEMPTION_STATUSES, "statuses": redemption_templates()}
+
+
+# ── Member tiers (names, points needed, benefits) ──────────────────────────
+@router.get("/tiers")
+def admin_list_tiers():
+    return supabase_admin.table("tiers").select("*").order("min_points", desc=False).execute().data or []
+
+
+@router.put("/tiers")
+def admin_save_tiers(tiers: list = Body(..., embed=True)):
+    """Replaces the tier list. Each item: {id?, name, min_points, benefits (one per line)}."""
+    clean = []
+    for t in tiers:
+        name = str(t.get("name") or "").strip()
+        try:
+            min_points = int(t.get("min_points"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Points needed for {name or 'each tier'} must be a whole number.")
+        if not name or min_points < 0:
+            raise HTTPException(status_code=400, detail="Each tier needs a name and the points needed (0 or more).")
+        clean.append({"id": t.get("id"), "name": name[:40], "min_points": min_points,
+                      "benefits": "\n".join(b.strip() for b in str(t.get("benefits") or "").splitlines() if b.strip())})
+    if not clean:
+        raise HTTPException(status_code=400, detail="Keep at least one tier.")
+    clean.sort(key=lambda t: t["min_points"])
+    if clean[0]["min_points"] != 0:
+        raise HTTPException(status_code=400, detail="The first tier must start at 0 points, so every member has a tier.")
+    if len({t["min_points"] for t in clean}) != len(clean):
+        raise HTTPException(status_code=400, detail="Two tiers can't need the same number of points.")
+
+    existing = {r["id"] for r in (supabase_admin.table("tiers").select("id").execute().data or [])}
+    keep = set()
+    for order, t in enumerate(clean, start=1):
+        row = {"name": t["name"], "min_points": t["min_points"], "benefits": t["benefits"], "sort_order": order}
+        if t["id"] and t["id"] in existing:
+            supabase_admin.table("tiers").update(row).eq("id", t["id"]).execute()
+            keep.add(t["id"])
+        else:
+            supabase_admin.table("tiers").insert(row).execute()
+    for old in existing - keep:
+        supabase_admin.table("tiers").delete().eq("id", old).execute()
+    return admin_list_tiers()
+
+
+# Members see three stages: Invited → Pending / signed up → Points added (or Not proceeding).
+# contacted / loan_in_progress / settled are older stages, still accepted and shown as the middle one.
+REFERRAL_STAGES = ["invited", "registered", "contacted", "loan_in_progress", "settled", "rewarded", "closed"]
 REFERRAL_PUSH_TEXT = {
+    "registered": "{name} has signed up to Reliance Rewards.",
     "contacted": "Reliance has contacted {name}.",
     "loan_in_progress": "{name}'s loan is in progress.",
     "settled": "{name}'s loan has settled. Your points are on the way!",
@@ -482,7 +523,7 @@ def update_broker_request(id: str, status: str = Body(None, embed=True), staff_n
 def send_event_thank_you(id: str, message: str = Body(..., embed=True), slides_url: str = Body(None, embed=True),
                          recording_url: str = Body(None, embed=True), extra_url: str = Body(None, embed=True)):
     """Sends everyone who checked in a thank-you: phone alert, in-app update and (when email
-    is set up) an email with the key points, links and a Talk to my broker button."""
+    is set up) an email with the key points, links and a Contact us button."""
     from app.services.email_service import _EMAIL_ENABLED
     from app.services.program_service import get_setting
 
@@ -516,7 +557,7 @@ def send_event_thank_you(id: str, message: str = Body(..., embed=True), slides_u
             user = r.get("users") or {}
             if user.get("email") and EmailService.send_event_thank_you(
                     user["email"], (user.get("full_name") or "").split(" ")[0], title, message, links,
-                    broker_url, get_setting("contact_name")):
+                    broker_url, get_setting("contact_name"), get_setting("contact_card_title") or "Contact us"):
                 emailed += 1
     supabase_admin.table("events").update({"thank_you_sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}).eq("id", id).execute()
     return {"attendees": len(attendees), "notified": notified, "emailed": emailed, "email_enabled": _EMAIL_ENABLED}

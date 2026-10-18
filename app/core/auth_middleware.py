@@ -21,11 +21,12 @@ if not APP_TOKENS_ENABLED:
     )
 
 APP_TOKEN_ISSUER = "rrc-backend"
-APP_TOKEN_TTL_SECONDS = 86400 * 30
+# Members stay signed in for 6 months; the app renews the token every time it opens.
+APP_TOKEN_TTL_SECONDS = 86400 * 180
 
 
 def issue_app_token(user_id: str, email: str = None) -> str:
-    """Issue a backend-signed token. Only used where Supabase cannot issue a session."""
+    """Issue a long-lived backend-signed sign-in token for the app."""
     if not APP_TOKENS_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

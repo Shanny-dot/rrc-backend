@@ -7,6 +7,7 @@ from app.schemas.redemption import RedemptionInDB
 from app.services.points_service import PointsService
 from app.services.email_service import EmailService
 from app.services.program_service import get_setting
+from app.services import redemption_service
 
 router = APIRouter()
 
@@ -117,15 +118,7 @@ def redeem_reward(id: str, current_user: dict = Depends(get_current_user)):
         supabase_admin.table("rewards").update({"stock": reward["stock"] - 1}).eq("id", id).execute()
 
     # 6. Emails: confirmation to the member, alert to staff
-    new_balance = (user.get("total_points") or 0) - reward["points_required"]
-    if user.get("email"):
-        EmailService.send_redemption_requested(
-            to_email=user["email"],
-            reward_name=reward["title"],
-            points_used=reward["points_required"],
-            remaining_balance=new_balance,
-            reference=str(redemption["id"])[:8].upper(),
-        )
-    EmailService.notify_admin_new_redemption(reward_name=reward["title"])
+    redemption_service.notify_status(redemption["id"], "pending")
+    EmailService.notify_admin_new_redemption(reward_name=reward["title"], member_name=user.get("full_name"))
 
     return redemption
