@@ -143,7 +143,7 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
         except Exception as e:
             print("Transaction log warning:", e)
         if diff > 0:
-            notify_service.push(id, "points", f"+{diff:,} points added", (reason or "Points added by Reliance").strip())
+            notify_service.push(id, "points", f"+{diff:,} points added", (reason or "Points added by Reliiance").strip())
 
     return {"message": f"Points updated to {new_points}", "data": resp.data[0]}
 
@@ -415,8 +415,8 @@ def admin_save_tiers(tiers: list = Body(..., embed=True)):
 # contacted / loan_in_progress / settled are older stages, still accepted and shown as the middle one.
 REFERRAL_STAGES = ["invited", "registered", "contacted", "loan_in_progress", "settled", "rewarded", "closed"]
 REFERRAL_PUSH_TEXT = {
-    "registered": "{name} has signed up to Reliance Rewards.",
-    "contacted": "Reliance has contacted {name}.",
+    "registered": "{name} has signed up to Reliiance Rewards.",
+    "contacted": "Reliiance has contacted {name}.",
     "loan_in_progress": "{name}'s loan is in progress.",
     "settled": "{name}'s loan has settled. Your points are on the way!",
 }

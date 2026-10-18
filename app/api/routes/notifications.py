@@ -7,11 +7,11 @@ from app.services.program_service import activity_for_user, _parse_ts
 router = APIRouter()
 
 REFERRAL_STAGE_TEXT = {
-    "contacted": "Reliance has contacted {name}.",
+    "contacted": "Reliiance has contacted {name}.",
     "loan_in_progress": "{name}'s loan is in progress.",
     "settled": "{name}'s loan has settled. Your points are on the way.",
     "rewarded": "You earned points for referring {name}.",
-    "registered": "{name} has signed up to Reliance Rewards.",
+    "registered": "{name} has signed up to Reliiance Rewards.",
 }
 
 LOGGED_KINDS = {"loan_checkin": "loan", "points_expiring": "points", "event_thanks": "event"}

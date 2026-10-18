@@ -215,7 +215,7 @@ def activity_for_user(user_id: str) -> list:
         elif ttype in ("admin_adjustment", "admin_award", "admin_deduct"):
             reason = (t.get("description") or "").strip()
             item["reason"] = reason
-            title = "Points added by Reliance team" if pts > 0 else "Points adjusted by Reliance team"
+            title = "Points added by Reliiance team" if pts > 0 else "Points adjusted by Reliiance team"
             status = "Points added" if pts > 0 else "Points removed"
 
         item["title"] = title

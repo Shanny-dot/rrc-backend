@@ -57,7 +57,7 @@ def create_referral(referral: ReferralCreate, current_user: dict = Depends(get_c
     if email:
         member = supabase_admin.table("users").select("id").eq("email", email).execute()
         if member.data:
-            raise HTTPException(status_code=400, detail="This person is already a Reliance Rewards member.")
+            raise HTTPException(status_code=400, detail="This person is already a Reliiance Rewards member.")
 
     # Already referred by this member?
     for field, value in (("referred_email", email), ("referred_mobile", mobile)):

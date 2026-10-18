@@ -19,7 +19,7 @@ DEFAULTS = {
     "contact_card_title": "Contact us",
     "tiers_intro": "",
     "welcome_points": "100",
-    "contact_name": "Your Reliance broker",
+    "contact_name": "Your Reliiance broker",
     "contact_phone": "",
     "contact_email": "",
     "contact_booking_url": "",
@@ -28,7 +28,7 @@ DEFAULTS = {
     "privacy_url": "https://rrc-admin.vercel.app/privacy-policy",
     "help_faq": json.dumps([
         {"q": "How do I earn points?",
-         "a": "You earn points when a friend you refer settles a home loan with Reliance, when you attend Reliance events, and through occasional bonuses."},
+         "a": "You earn points when a friend you refer settles a home loan with Reliiance, when you attend Reliiance events, and through occasional bonuses."},
         {"q": "When do I get points for a referral?",
          "a": "Referral points are added once your friend's loan settles. You can follow each referral's progress on the Referrals tab."},
         {"q": "How do I redeem a reward?",

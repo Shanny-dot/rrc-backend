@@ -23,14 +23,14 @@ class BonusService:
     def birthday(user_id: str, year: int) -> bool:
         return BonusService._pay(user_id, "bonus_birthday", str(year), "bonus_birthday_points",
                                  "Birthday bonus", "Happy birthday! +{points:,} points",
-                                 "A little birthday gift from everyone at Reliance.")
+                                 "A little birthday gift from everyone at Reliiance.")
 
     @staticmethod
     def loan_anniversary(user_id: str, year: int, years: int) -> bool:
         label = "1 year" if years == 1 else f"{years} years"
         return BonusService._pay(user_id, "bonus_loan_anniversary", str(year), "bonus_loan_anniversary_points",
                                  f"Loan anniversary bonus ({label})", "Happy loan anniversary! +{points:,} points",
-                                 f"Thanks for {label} with Reliance.")
+                                 f"Thanks for {label} with Reliiance.")
 
     @staticmethod
     def first_referral(user_id: str, friend_name: str) -> bool:

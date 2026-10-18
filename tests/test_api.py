@@ -55,7 +55,7 @@ def test_activity_status_labels(env):
     r = env["c"].get("/api/v1/transactions/", headers=env["member"])
     assert r.status_code == 200, r.text
     by_id = {a["id"]: a for a in r.json()}
-    assert by_id["55555555-0000-4000-8000-000000000002"]["title"] == "Points added by Reliance team"
+    assert by_id["55555555-0000-4000-8000-000000000002"]["title"] == "Points added by Reliiance team"
     assert by_id["55555555-0000-4000-8000-000000000002"]["status_label"] == "Points added" and by_id["55555555-0000-4000-8000-000000000002"]["reason"] == "Event bonus"
     assert by_id["55555555-0000-4000-8000-000000000003"]["status_label"] == "Pending" and by_id["55555555-0000-4000-8000-000000000003"]["redemption_id"] == "33333333-0000-4000-8000-000000000001"
 
@@ -237,7 +237,7 @@ def test_admin_points_adjustment_shows_in_activity(env):
               json={"new_points": cur + 250, "reason": "Goodwill"})
     assert r.status_code == 200, r.text
     acts = c.get("/api/v1/transactions/", headers=env["old"]).json()
-    assert acts[0]["title"] == "Points added by Reliance team" and acts[0]["points"] == 250
+    assert acts[0]["title"] == "Points added by Reliiance team" and acts[0]["points"] == 250
     assert acts[0]["reason"] == "Goodwill"
 
 
@@ -513,7 +513,7 @@ def test_referral_progress_alert_and_first_referral_bonus(env, monkeypatch):
         refs.append(rid)
     before = user(db, FRIEND_ID)["total_points"]
     c.put(f"/api/v1/admin/referrals/{refs[0]}/stage", headers=env["admin"], json={"status": "contacted"})
-    assert sent[-1][1:3] == ("Referral update", "Reliance has contacted Ann.")
+    assert sent[-1][1:3] == ("Referral update", "Reliiance has contacted Ann.")
     c.put(f"/api/v1/admin/referrals/{refs[0]}/stage", headers=env["admin"], json={"status": "settled"})
     c.put(f"/api/v1/admin/referrals/{refs[1]}/stage", headers=env["admin"], json={"status": "settled"})
     bonuses = [t for t in tx(db, FRIEND_ID) if t["type"] == "bonus"]
@@ -616,7 +616,7 @@ def test_emails_go_through_zeptomail(monkeypatch):
         return httpx.Response(201, json={"data": [{"code": "EM_104", "message": "Email request received"}]})
 
     monkeypatch.setattr(es.settings, "ZEPTOMAIL_API_KEY", "abc123token")
-    monkeypatch.setattr(es.settings, "FROM_NAME", "Reliance Rewards")
+    monkeypatch.setattr(es.settings, "FROM_NAME", "Reliiance Rewards")
     monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
     monkeypatch.setattr(es, "FROM_EMAIL", "noreply@reliiancerewards.com.au")
     monkeypatch.setattr(es.httpx, "post", fake_post)
@@ -626,7 +626,7 @@ def test_emails_go_through_zeptomail(monkeypatch):
     url, body, headers = calls[-1]
     assert url == "https://api.zeptomail.com.au/v1.1/email"
     assert headers["Authorization"] == "Zoho-enczapikey abc123token"
-    assert body["from"] == {"address": "noreply@reliiancerewards.com.au", "name": "Reliance Rewards"}
+    assert body["from"] == {"address": "noreply@reliiancerewards.com.au", "name": "Reliiance Rewards"}
     assert body["to"] == [{"email_address": {"address": "staff@example.com"}}]
     assert body["reply_to"] == [{"address": "manoj@example.com"}]
     assert "More events please" in body["htmlbody"] and body["subject"] == "App feedback from Manoj"
