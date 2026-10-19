@@ -735,3 +735,35 @@ def test_forgot_password_sends_our_own_email(env, monkeypatch):
     assert r.status_code == 200 and r.json()["success"]
     assert calls[-1]["options"]["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
     assert emails[-1]["to"] == "manoj@example.com" and "verify?token=abc" in emails[-1]["html"]
+
+
+def test_emails_go_through_google_workspace(monkeypatch):
+    import app.services.email_service as es
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            sent.append(("connect", host, port))
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): sent.append(("tls",))
+        def login(self, user, pwd): sent.append(("login", user, pwd))
+        def send_message(self, msg): sent.append(("msg", msg))
+
+    monkeypatch.setattr(es.settings, "SMTP_USER", "info@reliiancerewards.com.au")
+    monkeypatch.setattr(es.settings, "SMTP_PASSWORD", "abcd efgh ijkl mnop")
+    monkeypatch.setattr(es, "_SMTP", True)
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "FROM_EMAIL", "info@reliiancerewards.com.au")
+    monkeypatch.setattr(es.smtplib, "SMTP", FakeSMTP)
+
+    ok = es.EmailService.send_rsvp_confirmation("amy@example.com", "Amy Lee", {"title": "Gala", "location": "Sydney"},
+                                                "Friday 1 May 2030, 7 pm", "iVBORw0KGgo=")
+    assert ok is True
+    assert sent[0] == ("connect", "smtp.gmail.com", 587) and sent[1] == ("tls",)
+    assert sent[2] == ("login", "info@reliiancerewards.com.au", "abcdefghijklmnop")  # spaces in the app password ignored
+    msg = sent[3][1]
+    assert msg["To"] == "amy@example.com" and msg["Subject"] == "You're going: Gala"
+    assert "Reliiance Rewards" in msg["From"] and "info@reliiancerewards.com.au" in msg["From"]
+    raw = msg.as_string()
+    assert "cid:rsvpqr" in raw and "Content-ID: <rsvpqr>" in raw

@@ -1,13 +1,21 @@
+import base64
 import html
+import smtplib
+from email.message import EmailMessage
+from email.utils import formataddr
 import httpx
 import resend
 from app.core.config import settings
 
-# Emails go through ZeptoMail (Zoho) when ZEPTOMAIL_API_KEY is set, otherwise Resend.
-# FROM_EMAIL must be an address on a domain verified in that email service.
+# Emails go out through, in order of preference:
+#   1. Google Workspace (SMTP_USER + SMTP_PASSWORD, an app password) — sent from SMTP_USER
+#      unless FROM_EMAIL is one of that account's "Send mail as" aliases;
+#   2. ZeptoMail (Zoho) when ZEPTOMAIL_API_KEY is set;
+#   3. Resend.
+_SMTP = bool(settings.SMTP_USER and settings.SMTP_PASSWORD)
 resend.api_key = settings.RESEND_API_KEY or ""
-FROM_EMAIL = settings.FROM_EMAIL or "noreply@rrcapp.com"
-_EMAIL_ENABLED = bool((settings.ZEPTOMAIL_API_KEY or settings.RESEND_API_KEY) and settings.FROM_EMAIL)
+FROM_EMAIL = settings.FROM_EMAIL or settings.SMTP_USER or "noreply@rrcapp.com"
+_EMAIL_ENABLED = _SMTP or bool((settings.ZEPTOMAIL_API_KEY or settings.RESEND_API_KEY) and settings.FROM_EMAIL)
 
 GOLD = "#FAB95B"
 
@@ -23,10 +31,34 @@ def _zepto_address(value):
     return {"address": value} if isinstance(value, str) else value
 
 
+def _send_smtp(params: dict):
+    """Google Workspace: smtp.gmail.com with the account's app password."""
+    msg = EmailMessage()
+    msg["From"] = formataddr((settings.FROM_NAME, params["from"]))
+    to = params["to"] if isinstance(params["to"], list) else [params["to"]]
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = params["subject"]
+    if params.get("reply_to"):
+        msg["Reply-To"] = params["reply_to"]
+    msg.set_content("This email needs an email app that can show HTML.")
+    msg.add_alternative(params["html"], subtype="html")
+    for img in params.get("inline_images") or []:
+        maintype, subtype = (img.get("mime_type") or "image/png").split("/", 1)
+        msg.get_payload()[1].add_related(base64.b64decode(img["content"]), maintype=maintype, subtype=subtype,
+                                         cid=f"<{img['cid']}>")
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30) as smtp:
+        smtp.starttls()
+        smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD.replace(" ", ""))
+        smtp.send_message(msg)
+    return {"sent": True}
+
+
 def _send(params: dict):
     """Sends one email. params: from, to (address or list), subject, html, optional reply_to
-    and inline_images ([{cid, mime_type, content (base64)}], ZeptoMail only).
+    and inline_images ([{cid, mime_type, content (base64)}]).
     Raises on failure so callers' error handling (and logs) still apply."""
+    if _SMTP:
+        return _send_smtp(params)
     if settings.ZEPTOMAIL_API_KEY:
         to = params["to"] if isinstance(params["to"], list) else [params["to"]]
         body = {
