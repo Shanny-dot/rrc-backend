@@ -15,7 +15,7 @@ from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile
-from app.services.invite_service import link_new_member
+from app.services.invite_service import link_new_member, inviter_for
 from app.services.notify_service import PREF_KEYS, prefs_for
 import random
 import string
@@ -69,10 +69,14 @@ def _award_welcome_points(user_id: str, label: str = "") -> int:
         return 0
 
 
-def _welcome_new_member(user_id: str, email: str, full_name: str, referral_code: str, label: str = "") -> None:
+def _welcome_new_member(user_id: str, email: str, full_name: str, referral_code: str, label: str = "",
+                        joined_with: str = None) -> None:
+    """Welcome points and email. joined_with: the friend's referral code they signed up with, if any."""
     points = _award_welcome_points(user_id, label)
     if email:
-        EmailService.send_welcome_email(email, full_name, referral_code, points)
+        inviter = inviter_for(joined_with) if joined_with else None
+        inviter_name = ((inviter or {}).get("full_name") or "").strip() or None
+        EmailService.send_welcome_email(email, full_name, referral_code, points, inviter_name)
 
 def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
     """Make sure a signed-in Supabase account has its public.users member profile.
@@ -123,7 +127,7 @@ def _sign_in_social_member(email: str, full_name: str, provider: str, referral_c
             "referral_code": code,
             "profile_complete": False,
         }).execute()
-        _welcome_new_member(user_id, email, full_name, code, f"({provider})")
+        _welcome_new_member(user_id, email, full_name, code, f"({provider})", referral_code)
         if referral_code:
             link_new_member(user_id, referral_code, full_name, email=email)
     token = issue_app_token(user_id, email)
@@ -174,7 +178,7 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False
                 }).execute()
-                _welcome_new_member(user.id, user.email, full_name, ref_code, f"({creds.provider})")
+                _welcome_new_member(user.id, user.email, full_name, ref_code, f"({creds.provider})", creds.referral_code)
                 if creds.referral_code:
                     link_new_member(user.id, creds.referral_code, full_name, email=user.email)
 
@@ -211,7 +215,7 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False
                 }).execute()
-                _welcome_new_member(user_id, claims.get("email"), "", ref_code, "(apple)")
+                _welcome_new_member(user_id, claims.get("email"), "", ref_code, "(apple)", creds.referral_code)
                 if creds.referral_code:
                     link_new_member(user_id, creds.referral_code, "Apple User", email=apple_email)
 
@@ -291,7 +295,7 @@ def register(request: Request, creds: RegisterCredentials):
             print(f"SMS OTP trigger skipped/error: {otp_err}")
 
         # 6. Welcome points (amount set on the admin Program settings page) and welcome email
-        _welcome_new_member(user.id, creds.email, creds.full_name, unique_ref_code, "(register)")
+        _welcome_new_member(user.id, creds.email, creds.full_name, unique_ref_code, "(register)", creds.referral_code)
 
         return TokenResponse(access_token="pending_verification")
 
@@ -441,9 +445,15 @@ def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current
             update_data.pop(key)  # never blank out the name or mobile by accident
 
     if update_data:
+         before = (supabase_admin.table("users").select("full_name, email, mobile").eq("id", user_id).execute().data or [{}])[0]
          # Automatically mark profile as completed when profile details are saved
          update_data["profile_complete"] = True
          resp = supabase_admin.table("users").update(update_data).eq("id", user_id).execute()
+         # "Your details were updated — if this wasn't you, contact us" when contact details change
+         changes = [(label, update_data[key]) for key, label in (("mobile", "Mobile number"), ("email", "Email address"))
+                    if key in update_data and (update_data[key] or "") != (before.get(key) or "")]
+         if changes and before.get("email"):
+             EmailService.send_details_changed(before["email"], update_data.get("full_name") or before.get("full_name"), changes)
          return resp.data[0] if resp.data else {}
     return {"message": "No data provided"}
 
@@ -457,10 +467,13 @@ def update_fcm_token(req: FCMTokenRequest, current_user: dict = Depends(get_curr
 def delete_account(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
     try:
+        member = (supabase_admin.table("users").select("full_name, email, total_points").eq("id", user_id).execute().data or [{}])[0]
         # Delete from public.users (triggers DB cascade deletes)
         supabase_admin.table("users").delete().eq("id", user_id).execute()
         # Delete from auth.users (Supabase Auth)
         supabase_admin.auth.admin.delete_user(user_id)
+        if member.get("email"):
+            EmailService.send_account_deleted(member["email"], member.get("full_name"), member.get("total_points") or 0)
         return {"success": True, "message": "Account deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to delete account: {str(e)}")

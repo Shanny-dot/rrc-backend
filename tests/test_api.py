@@ -767,3 +767,83 @@ def test_emails_go_through_google_workspace(monkeypatch):
     assert "Reliiance Rewards" in msg["From"] and "info@reliiancerewards.com.au" in msg["From"]
     raw = msg.as_string()
     assert "cid:rsvpqr" in raw and "Content-ID: <rsvpqr>" in raw
+
+def test_final_member_emails(env, monkeypatch):
+    """The client's final email list: points added, tier upgrade, details changed, friend joined,
+    event changed / cancelled / week-before reminder, points expiring, account deleted."""
+    import datetime
+    import app.services.email_service as es
+    from app.api.routes import jobs
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    c, a, db = env["c"], env["admin"], env["db"]
+    subjects = lambda: [e["subject"] for e in emails]  # noqa: E731
+
+    # Points added by staff, which also lifts the member into a new tier
+    m = user(db, FRIEND_ID)
+    r = c.put(f"/api/v1/admin/users/{FRIEND_ID}/points", headers=a, json={"new_points": m["total_points"] + 6000, "reason": "Launch thank-you"})
+    assert r.status_code == 200, r.text
+    added = next(e for e in emails if e["subject"] == "+6,000 points added to your account")
+    assert "Launch thank-you" in added["html"] and added["to"] == "old@example.com"
+    assert "You've reached Platinum tier" in subjects()
+
+    # Mobile number changed (and only when it really changes)
+    n = len(emails)
+    c.put("/api/v1/auth/profile", headers=env["old"], json={"mobile": "0412 000 999"})
+    assert emails[-1]["subject"] == "Your account details were updated" and "0412 000 999" in emails[-1]["html"]
+    c.put("/api/v1/auth/profile", headers=env["old"], json={"mobile": "0412 000 999", "city": "Perth"})
+    assert len(emails) == n + 1
+
+    # A friend signs up with the member's code
+    from app.services.invite_service import link_new_member
+    db.tables["users"].append({"id": "00000000-0000-4000-8000-0000000000f9", "full_name": "Neha Rao", "email": "neha@example.com",
+                               "total_points": 0, "referral_code": "NEHA0001", "deleted_at": None})
+    link_new_member("00000000-0000-4000-8000-0000000000f9", "OLD00001", "Neha Rao", email="neha@example.com")
+    assert "Neha Rao joined Reliiance Rewards" in subjects()
+
+    # Event changes and cancellation reach everyone booked in
+    ev = c.post("/api/v1/admin/events", headers=a, json={"title": "Wine Night", "location": "Manly",
+                                                       "event_date": "2030-06-01T08:00:00Z", "attendee_info": "Parking on Pittwater Rd"}).json()
+    c.post(f"/api/v1/events/{ev['id']}/rsvp", headers=env["old"])
+    rsvp_mail = emails[-1]
+    assert "Parking on Pittwater Rd" in rsvp_mail["html"] and rsvp_mail["attachments"][0]["name"] == "event.ics"
+    assert "calendar.google.com" in rsvp_mail["html"]
+    c.put(f"/api/v1/admin/events/{ev['id']}", headers=a, json={"location": "Mosman"})
+    assert emails[-1]["subject"] == "Event update: Wine Night" and "New location: Mosman" in emails[-1]["html"]
+    c.put(f"/api/v1/admin/events/{ev['id']}", headers=a, json={"is_active": False})
+    assert emails[-1]["subject"] == "Event cancelled: Wine Night"
+
+    # Reminder a week before
+    start = datetime.datetime.combine(jobs._today() + datetime.timedelta(days=7), datetime.time(18, 0), tzinfo=jobs.PROGRAM_TZ)
+    ev2 = c.post("/api/v1/admin/events", headers=a, json={"title": "Golf Day", "event_date": start.isoformat()}).json()
+    c.post(f"/api/v1/events/{ev2['id']}/rsvp", headers=env["old"])
+    assert jobs.event_reminders(jobs._today(), 7) == 1
+    assert emails[-1]["subject"] == "Reminder: Golf Day is in a week"
+
+    # Account deleted
+    tok = env["c"].post("/api/v1/auth/login", json={"email": "newbie@example.com", "password": "Secret123!"}).json()["access_token"]
+    assert c.delete("/api/v1/auth/account", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
+    assert emails[-1]["subject"] == "Your account has been deleted" and emails[-1]["to"] == "newbie@example.com"
+
+
+def test_points_expiring_email_lists_affordable_rewards(env, monkeypatch):
+    import datetime
+    import app.services.email_service as es
+    from app.api.routes import jobs
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    _setting(env["db"], "points_expiry_months", "12")
+    today = jobs._today()
+    member = {"id": "00000000-0000-4000-8000-0000000000aa", "full_name": "Ivy Tan", "email": "ivy@example.com", "total_points": 400}
+    old = (datetime.datetime.combine(jobs._add_months(today, -12) + datetime.timedelta(days=10), datetime.time(2)))
+    env["db"].tables["transactions"].append({"id": "55555555-0000-4000-8000-0000000000aa", "user_id": member["id"], "type": "referral",
+                                             "points": 400, "created_at": old.replace(tzinfo=datetime.timezone.utc).isoformat()})
+    env["db"].tables["users"].append({**member, "deleted_at": None})
+    out = jobs.points_expiry(today, [member])
+    assert out["expiry_alerts"] == 1
+    mail = emails[-1]
+    assert mail["to"] == "ivy@example.com" and "400 points expire on" in mail["subject"]
+    assert "Tandem Skydive" in mail["html"] and "Exclusive VIP Property Tour" not in mail["html"]  # 300 affordable, 5,000 not
+    _setting(env["db"], "points_expiry_months", "0")

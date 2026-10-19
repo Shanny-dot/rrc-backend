@@ -110,3 +110,14 @@ def link_new_member(user_id: str, code: str, full_name: str, email: str = None, 
             }).execute()
     except Exception as e:
         print(f"Referral link warning: {e}")
+        return
+    # "Your friend joined" email to the member who invited them
+    try:
+        from app.services.email_service import EmailService
+        from app.services.program_service import get_int_setting
+        rows = supabase_admin.table("users").select("full_name, email").eq("id", inviter["id"]).execute().data or []
+        if rows and rows[0].get("email"):
+            EmailService.send_friend_joined(rows[0]["email"], rows[0].get("full_name"), full_name or "Your friend",
+                                            get_int_setting("referral_points"))
+    except Exception as e:
+        print(f"Friend joined email warning: {e}")

@@ -53,26 +53,29 @@ def _date(value):
         return None
 
 
-def event_reminders(today: datetime.date) -> int:
-    tomorrow = today + datetime.timedelta(days=1)
+def event_reminders(today: datetime.date, days: int = 1) -> int:
+    """Phone alert + email to everyone booked in, the day before (days=1) or a week before (days=7)."""
+    target = today + datetime.timedelta(days=days)
+    kind = "event_reminder" if days == 1 else f"event_reminder_{days}d"
     sent = 0
-    events = supabase_admin.table("events").select("id, title, event_date, location, is_active").execute().data or []
+    events = supabase_admin.table("events").select("*").execute().data or []
     for ev in events:
         start = _parse_ts(ev.get("event_date"))
-        if not start or ev.get("is_active") is False or start.astimezone(PROGRAM_TZ).date() != tomorrow:
+        if not start or ev.get("is_active") is False or start.astimezone(PROGRAM_TZ).date() != target:
             continue
         local = start.astimezone(PROGRAM_TZ)
         when = local.strftime("%I:%M %p").lstrip("0").replace(":00 ", " ").lower()
-        body = f"Tomorrow at {when}" + (f" · {ev['location']}" if ev.get("location") else "")
+        day = "Tomorrow" if days == 1 else f"{local:%A} {local.day} {local:%B}"
+        body = f"{day} at {when}" + (f" · {ev['location']}" if ev.get("location") else "")
+        title = f"See you tomorrow: {ev['title']}" if days == 1 else f"Coming up next week: {ev['title']}"
         rsvps = supabase_admin.table("event_rsvps").select("user_id, cancelled, users(full_name, email)") \
             .eq("event_id", ev["id"]).execute().data or []
         for r in rsvps:
-            if not r.get("cancelled") and notify_service.notify_once(
-                    r["user_id"], "event_reminder", str(ev["id"]), f"See you tomorrow: {ev['title']}", body, {"event_id": ev["id"]}):
+            if not r.get("cancelled") and notify_service.notify_once(r["user_id"], kind, str(ev["id"]), title, body, {"event_id": ev["id"]}):
                 sent += 1
                 member = r.get("users") or {}
                 if member.get("email"):
-                    EmailService.send_event_reminder(member["email"], member.get("full_name"), ev, event_when(ev))
+                    EmailService.send_event_reminder(member["email"], member.get("full_name"), ev, event_when(ev), days)
     return sent
 
 
@@ -134,6 +137,7 @@ def points_expiry(today: datetime.date, members: list) -> dict:
     by_user = {}
     for t in all_tx:
         by_user.setdefault(str(t["user_id"]), []).append(t)
+    rewards = None  # loaded once, only if an expiry email goes out
     for m in members:
         balance = m.get("total_points") or 0
         if balance <= 0:
@@ -152,6 +156,15 @@ def points_expiry(today: datetime.date, members: list) -> dict:
                                           f"{soon:,} points expire soon",
                                           f"Use them by {by:%d %b} — browse rewards in the app."):
                 out["expiry_alerts"] += 1
+                if m.get("email"):
+                    if rewards is None:
+                        rewards = supabase_admin.table("rewards").select("title, points_required, is_active, stock") \
+                            .execute().data or []
+                    affordable = sorted((r for r in rewards if r.get("is_active", True) and r.get("stock") != 0
+                                         and (r.get("points_required") or 0) <= balance),
+                                        key=lambda r: -(r.get("points_required") or 0))[:5]
+                    EmailService.send_points_expiring(m["email"], m.get("full_name"), soon, f"{by:%d %B %Y}", balance,
+                                                      [(r["title"], r["points_required"]) for r in affordable])
     return out
 
 
@@ -160,10 +173,11 @@ def run_daily(x_job_key: str = Header(default="")):
     if not settings.JOB_SECRET or x_job_key != settings.JOB_SECRET:
         raise HTTPException(status_code=403, detail="Not allowed")
     today = _today()
-    members = [m for m in (supabase_admin.table("users").select("id, dob, loan_settled_on, total_points, deleted_at")
+    members = [m for m in (supabase_admin.table("users").select("id, full_name, email, dob, loan_settled_on, total_points, deleted_at")
                            .execute().data or []) if not m.get("deleted_at")]
     summary = {"date": today.isoformat(), "event_reminders": 0}
-    for name, task in (("event_reminders", lambda: {"event_reminders": event_reminders(today)}),
+    for name, task in (("event_reminders", lambda: {"event_reminders": event_reminders(today),
+                                                    "event_reminders_week": event_reminders(today, 7)}),
                        ("occasions", lambda: birthdays_and_anniversaries(today, members)),
                        ("expiry", lambda: points_expiry(today, members))):
         try:

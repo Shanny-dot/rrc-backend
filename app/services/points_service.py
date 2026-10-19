@@ -29,11 +29,13 @@ class PointsService:
                 transaction_data["reference_id"] = reference_id
                 
             supabase_admin.table("transactions").insert(transaction_data).execute()
-            
-            return True
         except Exception as e:
             print(f"Error awarding points: {e}")
             raise HTTPException(status_code=500, detail="Failed to award points")
+        # "Points added" / "tier upgrade" emails (never raises)
+        from app.services.member_alerts import after_points_added
+        after_points_added(user_id, points, type, description)
+        return True
 
     @staticmethod
     def deduct_points(user_id: str, points: int, type: str, description: str, reference_id: str = None):

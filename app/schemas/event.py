@@ -8,6 +8,7 @@ class EventBase(BaseModel):
     category: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
+    attendee_info: Optional[str] = None  # parking, webinar link, dress code …
     event_date: datetime
     image_url: Optional[str] = None
     points_for_attending: int = 0
@@ -27,6 +28,7 @@ class EventUpdate(BaseModel):
     category: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
+    attendee_info: Optional[str] = None
     event_date: Optional[datetime] = None
     image_url: Optional[str] = None
     points_for_attending: Optional[int] = None

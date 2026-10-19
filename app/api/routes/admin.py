@@ -10,7 +10,7 @@ from app.services.email_service import EmailService
 from app.services import notify_service
 from app.services.bonus_service import BonusService
 from app.schemas.referral import ReferralStageUpdate
-from app.services.program_service import get_int_setting, redemption_templates, REDEMPTION_STATUSES
+from app.services.program_service import get_int_setting, redemption_templates, REDEMPTION_STATUSES, event_when, _parse_ts
 from app.services import redemption_service
 import datetime
 import json
@@ -144,6 +144,8 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
             print("Transaction log warning:", e)
         if diff > 0:
             notify_service.push(id, "points", f"+{diff:,} points added", (reason or "Points added by Reliiance").strip())
+            from app.services.member_alerts import after_points_added
+            after_points_added(id, diff, "admin_adjustment", (reason or "Points added by the Reliiance team").strip())
 
     return {"message": f"Points updated to {new_points}", "data": resp.data[0]}
 
@@ -185,10 +187,61 @@ def update_event(id: str, event: EventUpdate):
     resp = supabase_admin.table("events").update(update_data).eq("id", id).execute()
     if not resp.data:
          raise HTTPException(status_code=404, detail="Event not found")
+    _tell_attendees_about_change(current[0], resp.data[0])
     return resp.data[0]
+
+
+def _event_attendees(event_id: str) -> list:
+    rows = supabase_admin.table("event_rsvps").select("user_id, cancelled, users(full_name, email)") \
+        .eq("event_id", event_id).execute().data or []
+    return [r for r in rows if not r.get("cancelled")]
+
+
+def _upcoming(event: dict) -> bool:
+    start = _parse_ts(event.get("event_date"))
+    return bool(start and start > datetime.datetime.now(datetime.timezone.utc))
+
+
+def _tell_attendees_about_change(before: dict, after: dict) -> None:
+    """Emails (and alerts) everyone booked in when an upcoming event's time, place or details
+    change, or when it's switched off (cancelled)."""
+    if not before or not _upcoming(before):
+        return
+    if before.get("is_active", True) and after.get("is_active") is False:
+        _tell_attendees_cancelled(before)
+        return
+    changes = []
+    if _parse_ts(before.get("event_date")) != _parse_ts(after.get("event_date")):
+        changes.append(f"New date and time: {event_when(after)}")
+    if (before.get("location") or "").strip() != (after.get("location") or "").strip():
+        changes.append(f"New location: {after.get('location') or 'to be confirmed'}")
+    if (before.get("attendee_info") or "").strip() != (after.get("attendee_info") or "").strip() and after.get("attendee_info"):
+        changes.append("Updated details for attendees (see below)")
+    if (before.get("title") or "") != (after.get("title") or ""):
+        changes.append(f"New name: {after.get('title')}")
+    if not changes:
+        return
+    for r in _event_attendees(after["id"]):
+        notify_service.push(r["user_id"], "event_reminder", f"Event update: {after.get('title')}", changes[0], {"event_id": after["id"]})
+        member = r.get("users") or {}
+        if member.get("email"):
+            EmailService.send_event_changed(member["email"], member.get("full_name"), after, event_when(after), changes)
+
+
+def _tell_attendees_cancelled(event: dict) -> None:
+    for r in _event_attendees(event["id"]):
+        notify_service.push(r["user_id"], "event_reminder", f"Cancelled: {event.get('title')}",
+                            "Sorry — this event has been cancelled.", {"event_id": event["id"]})
+        member = r.get("users") or {}
+        if member.get("email"):
+            EmailService.send_event_cancelled(member["email"], member.get("full_name"), event, event_when(event))
+
 
 @router.delete("/events/{id}")
 def delete_event(id: str):
+    rows = supabase_admin.table("events").select("*").eq("id", id).execute().data or []
+    if rows and rows[0].get("is_active", True) and _upcoming(rows[0]):
+        _tell_attendees_cancelled(rows[0])
     supabase_admin.table("events").delete().eq("id", id).execute()
     return {"message": "Event deleted"}
 
@@ -538,11 +591,11 @@ def send_event_thank_you(id: str, message: str = Body(..., embed=True), slides_u
                 raise HTTPException(status_code=400, detail=f"{label} link must start with https://")
             links.append((label, url))
 
-    ev = supabase_admin.table("events").select("id, title").eq("id", id).execute().data
+    ev = supabase_admin.table("events").select("id, title, points_for_attending").eq("id", id).execute().data
     if not ev:
         raise HTTPException(status_code=404, detail="Event not found")
     title = ev[0]["title"]
-    rsvps = supabase_admin.table("event_rsvps").select("user_id, attended, cancelled, users(full_name, email)") \
+    rsvps = supabase_admin.table("event_rsvps").select("user_id, attended, cancelled, points_awarded, users(full_name, email)") \
         .eq("event_id", id).execute().data or []
     attendees = [r for r in rsvps if r.get("attended") and not r.get("cancelled")]
     if not attendees:
@@ -557,7 +610,8 @@ def send_event_thank_you(id: str, message: str = Body(..., embed=True), slides_u
             user = r.get("users") or {}
             if user.get("email") and EmailService.send_event_thank_you(
                     user["email"], (user.get("full_name") or "").split(" ")[0], title, message, links,
-                    broker_url, get_setting("contact_name"), get_setting("contact_card_title") or "Contact us"):
+                    broker_url, get_setting("contact_name"), get_setting("contact_card_title") or "Contact us",
+                    (ev[0].get("points_for_attending") or 0) if r.get("points_awarded") else 0):
                 emailed += 1
     supabase_admin.table("events").update({"thank_you_sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}).eq("id", id).execute()
     return {"attendees": len(attendees), "notified": notified, "emailed": emailed, "email_enabled": _EMAIL_ENABLED}

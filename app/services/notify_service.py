@@ -15,6 +15,7 @@ _PREF_FOR_KIND = {
     "referral": "referrals",
     "reward": "rewards",
     "event_reminder": "events",
+    "event_reminder_7d": "events",
     "event_thanks": "events",
     "points_expiring": "expiry",
     "points_expired": "expiry",

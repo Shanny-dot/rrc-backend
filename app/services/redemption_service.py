@@ -3,7 +3,7 @@ the admin website) and a phone alert."""
 from app.core.supabase_client import supabase_admin
 from app.services import notify_service
 from app.services.email_service import EmailService
-from app.services.program_service import redemption_templates
+from app.services.program_service import redemption_templates, get_setting
 
 
 def reference(redemption_id) -> str:
@@ -11,7 +11,7 @@ def reference(redemption_id) -> str:
 
 
 def notify_status(redemption_id: str, status: str, note: str = None) -> None:
-    rows = supabase_admin.table("redemptions").select("*, users(full_name, email), rewards(title)") \
+    rows = supabase_admin.table("redemptions").select("*, users(full_name, email), rewards(title, description, delivery_info)") \
         .eq("id", redemption_id).execute().data or []
     if not rows:
         return
@@ -28,6 +28,11 @@ def notify_status(redemption_id: str, status: str, note: str = None) -> None:
         "balance": f"{bal[0].get('total_points') or 0:,} points",
         "reference": reference(redemption_id),
     }
+    if status in ("pending", "in_progress", "approved"):
+        reward_row = red.get("rewards") or {}
+        values["delivery"] = reward_row.get("delivery_info") or get_setting("reward_delivery_default") or ""
+        if status == "pending":
+            values["description"] = reward_row.get("description") or ""
     if member.get("email"):
         EmailService.send_redemption_status(member["email"], member.get("full_name"), template, values, note)
     if status != "pending":  # the member is looking at the app when they redeem
