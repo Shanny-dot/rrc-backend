@@ -66,7 +66,11 @@ def create_request(request: Request, body: BrokerRequestCreate, current_user: di
 @router.get("/checkin")
 def loan_checkin_status(current_user: dict = Depends(get_current_user)):
     """Whether to show the yearly "Is your loan still competitive?" card: a check-in was sent
-    in the last 45 days and the member hasn't asked for a review since."""
+    in the last 45 days and the member hasn't asked for a review since. Always off while the
+    check-in itself is switched off (older app versions still ask)."""
+    from app.api.routes.jobs import LOAN_CHECKIN_ENABLED
+    if not LOAN_CHECKIN_ENABLED:
+        return {"due": False}
     user_id = current_user.get("sub")
     logs = supabase_admin.table("notification_log").select("created_at, body").eq("user_id", user_id) \
         .eq("kind", "loan_checkin").order("created_at", desc=True).execute().data or []
