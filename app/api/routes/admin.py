@@ -149,6 +149,42 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
 
     return {"message": f"Points updated to {new_points}", "data": resp.data[0]}
 
+# ── Image upload (rewards and events) ──────────────────────────────────────
+IMAGE_BUCKET = "reward-images"   # public bucket; images are shown in the app
+IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/upload-image")
+def upload_image(content_type: str = Body(..., embed=True), data_base64: str = Body(..., embed=True),
+                 folder: str = Body("rewards", embed=True)):
+    """Stores a picture chosen on the admin website and returns its public link.
+    Sent as base64 JSON so no extra upload library is needed."""
+    import base64
+    import uuid as _uuid
+    ext = IMAGE_TYPES.get((content_type or "").lower())
+    if not ext:
+        raise HTTPException(status_code=400, detail="Please choose a JPG, PNG, WebP or GIF image.")
+    try:
+        data = base64.b64decode(data_base64.split(",", 1)[-1], validate=False)
+    except Exception:
+        raise HTTPException(status_code=400, detail="That image couldn't be read. Please try another file.")
+    if not data:
+        raise HTTPException(status_code=400, detail="That image is empty.")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Images must be under 5 MB.")
+    folder = folder if folder in ("rewards", "events") else "rewards"
+    path = f"{folder}/{datetime.datetime.now(datetime.timezone.utc):%Y%m%d}-{_uuid.uuid4().hex[:12]}.{ext}"
+    try:
+        store = supabase_admin.storage.from_(IMAGE_BUCKET)
+        store.upload(path, data, {"content-type": content_type, "cache-control": "31536000", "upsert": "false"})
+        url = store.get_public_url(path)
+    except Exception as e:
+        print(f"Image upload failed: {e}")
+        raise HTTPException(status_code=500, detail="The image couldn't be uploaded. Please try again.")
+    return {"url": url.rstrip("?") if isinstance(url, str) else url}
+
+
 @router.get("/events")
 def list_all_events():
     resp = supabase_admin.table("events").select("*").order("event_date", desc=False).execute()

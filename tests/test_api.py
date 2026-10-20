@@ -847,3 +847,27 @@ def test_points_expiring_email_lists_affordable_rewards(env, monkeypatch):
     assert mail["to"] == "ivy@example.com" and "400 points expire on" in mail["subject"]
     assert "Tandem Skydive" in mail["html"] and "Exclusive VIP Property Tour" not in mail["html"]  # 300 affordable, 5,000 not
     _setting(env["db"], "points_expiry_months", "0")
+
+def test_admin_uploads_reward_image(env):
+    import base64
+    db, c = env["db"], env["c"]
+    stored = {}
+
+    class Bucket:
+        def __init__(self, name): self.name = name
+        def upload(self, path, data, options): stored[path] = (self.name, data, options)
+        def get_public_url(self, path): return f"https://example.supabase.co/storage/v1/object/public/{self.name}/{path}?"
+
+    db.storage = type("S", (), {"from_": staticmethod(lambda name: Bucket(name))})()
+    jpg = base64.b64encode(b"\xff\xd8\xff\xe0fake-jpeg").decode()
+    r = c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "image/jpeg", "data_base64": jpg})
+    assert r.status_code == 200, r.text
+    url = r.json()["url"]
+    path = next(iter(stored))
+    assert path.startswith("rewards/") and path.endswith(".jpg") and stored[path][0] == "reward-images"
+    assert stored[path][1] == b"\xff\xd8\xff\xe0fake-jpeg" and url.endswith(path)
+    # Members can't upload, and only images are accepted
+    assert c.post("/api/v1/admin/upload-image", headers=env["member"], json={"content_type": "image/jpeg", "data_base64": jpg}).status_code == 403
+    assert c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "application/pdf", "data_base64": jpg}).status_code == 400
+    big = base64.b64encode(b"x" * (5 * 1024 * 1024 + 1)).decode()
+    assert c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "image/png", "data_base64": big}).status_code == 400
