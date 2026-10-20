@@ -15,7 +15,7 @@ def user(db, uid):
     return next(u for u in db.tables["users"] if u["id"] == uid)
 
 
-# â”€â”€ Security â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Security ───────────────────────────────────────────────────────────────
 def test_health(env):
     assert env["c"].get("/health").json() == {"status": "ok"}
 
@@ -35,7 +35,7 @@ def test_forged_token_rejected(env):
     assert r.status_code == 401
 
 
-# â”€â”€ Home: tier, activity, notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Home: tier, activity, notifications ───────────────────────────────────
 def test_me_includes_tier(env):
     r = env["c"].get("/api/v1/auth/me", headers=env["member"])
     assert r.status_code == 200, r.text
@@ -65,7 +65,7 @@ def test_app_version(env):
     assert r.status_code == 200 and r.json()["min_version"] == "3.0.0" and r.json()["latest_version"] == "3.1.0"
 
 
-# â”€â”€ Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Events ────────────────────────────────────────────────────────────────
 def test_events_rsvp_cycle(env):
     c, h = env["c"], env["member"]
     assert {e["id"] for e in c.get("/api/v1/events/").json()} == {"11111111-0000-4000-8000-000000000001", "11111111-0000-4000-8000-000000000002"}
@@ -99,7 +99,7 @@ def test_admin_create_event_with_category(env):
     assert r.json()["category"] == "Real Estate"
 
 
-# â”€â”€ Rewards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Rewards ───────────────────────────────────────────────────────────────
 def test_rewards_list_and_detail(env):
     c = env["c"]
     ids = [r["id"] for r in c.get("/api/v1/rewards/").json()]
@@ -134,7 +134,7 @@ def test_redeem_and_insufficient(env):
     env["new_red"] = red_id
 
 
-# â”€â”€ Admin: redemptions approve â†’ sent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Admin: redemptions approve → sent ─────────────────────────────────────
 def test_admin_approve_then_sent(env):
     c, a, db = env["c"], env["admin"], env["db"]
     red = env["new_red"]
@@ -171,7 +171,7 @@ def test_admin_redemption_in_progress_and_status_wording(env, monkeypatch):
     assert emails[-1]["subject"] == "Toy World Card is being processed" and "Hang tight" in emails[-1]["html"]
     acts = c.get("/api/v1/transactions/", headers=h).json()
     assert any(x.get("redemption_id") == red and x["status_label"] == "Being processed" for x in acts)
-    # In progress â†’ Approved; an approved request can't go back.
+    # In progress → Approved; an approved request can't go back.
     assert c.put(f"/api/v1/admin/redemptions/{red}/approve", headers=a).status_code == 200
     assert c.put(f"/api/v1/admin/redemptions/{red}/status", headers=a, json={"status": "in_progress"}).status_code == 400
     assert c.put("/api/v1/admin/redemption-statuses", headers=a,
@@ -186,7 +186,7 @@ def test_admin_reject_refunds(env):
     assert user(db, MEMBER_ID)["total_points"] == before + 50
 
 
-# â”€â”€ Referrals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Referrals ─────────────────────────────────────────────────────────────
 def test_referral_new_app_requires_consent(env):
     c, h = env["c"], env["member"]
     body = {"referred_name": "Amy", "referred_mobile": "0400 111 222", "channel": "share"}
@@ -229,7 +229,7 @@ def test_admin_referral_stages_and_points(env):
     assert mine["44444444-0000-4000-8000-000000000001"]["status"] == "rewarded"
 
 
-# â”€â”€ Admin: points, profile, delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Admin: points, profile, delete ────────────────────────────────────────
 def test_admin_points_adjustment_shows_in_activity(env):
     c, db = env["c"], env["db"]
     cur = user(db, FRIEND_ID)["total_points"]
@@ -244,7 +244,7 @@ def test_admin_points_adjustment_shows_in_activity(env):
 def test_profile_update_with_new_options(env):
     r = env["c"].put("/api/v1/auth/profile", headers=env["member"], json={
         "dob": "1986-03-14", "gender": "Male", "state": "NSW", "industry": "Accounting & Finance",
-        "home_ownership": "Own with a mortgage", "annual_income": "$50,000 â€“ $100,000"})
+        "home_ownership": "Own with a mortgage", "annual_income": "$50,000 – $100,000"})
     assert r.status_code == 200, r.text
     assert user(env["db"], MEMBER_ID)["home_ownership"] == "Own with a mortgage"
     # The date of birth reaches the database as text: a Python date made every save fail.
@@ -304,7 +304,7 @@ def test_forgot_password_link_opens_reset_page(env):
     assert opts["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
 
 
-# â”€â”€ Mobile OTP (Guni SMS) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Mobile OTP (Guni SMS) ─────────────────────────────────────────────────
 def _capture_guni(monkeypatch):
     """Stub the Guni gateway; return the list of JSON payloads it was sent."""
     import httpx
@@ -356,7 +356,7 @@ def test_mobile_otp_unknown_number_and_sms_off(env, monkeypatch):
     assert c.post("/api/v1/auth/resend-otp", json={"mobile": "+61412000111"}).status_code == 400
 
 
-# â”€â”€ Help & contact settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Help & contact settings ───────────────────────────────────────────────
 def test_help_and_contact_content(env):
     import json
     c = env["c"]
@@ -382,7 +382,7 @@ def test_help_and_contact_content(env):
     assert row.get("label") != "referral_points"
 
 
-# â”€â”€ Personal invite links â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Personal invite links ─────────────────────────────────────────────────
 def test_invite_link_fills_in_code_after_install(env):
     c = env["c"]
     friend_phone = {"CF-Connecting-IP": "203.0.113.5"}
@@ -424,7 +424,7 @@ def test_signup_with_invite_code_links_referral(env):
     assert row["channel"] == "code" and row["status"] == "registered"
 
 
-# â”€â”€ Feedback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Feedback ──────────────────────────────────────────────────────────────
 def test_feedback_reaches_admin(env):
     c = env["c"]
     assert c.post("/api/v1/feedback", json={"message": "Hi"}).status_code in (401, 403)
@@ -442,7 +442,7 @@ def test_feedback_reaches_admin(env):
     assert c.put(f"/api/v1/admin/feedback/{items[0]['id']}", headers=env["admin"], json={"status": "done"}).status_code == 400
 
 
-# â”€â”€ Broker requests (Book a time / loan review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Broker requests (Book a time / loan review) ───────────────────────────
 def test_book_a_time_reaches_staff(env):
     import datetime
     c = env["c"]
@@ -462,7 +462,7 @@ def test_book_a_time_reaches_staff(env):
     assert r.status_code == 200 and r.json()["status"] == "contacted" and r.json()["staff_note"] == "Called Tue"
 
 
-# â”€â”€ Phase 3: alerts, bonuses, loan check-ins, thank-yous â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Phase 3: alerts, bonuses, loan check-ins, thank-yous ───────────────────
 def _setting(db, key, value):
     rows = db.tables["app_content"]
     row = next((r for r in rows if r["key"] == key), None)
@@ -605,7 +605,7 @@ def test_event_thank_you_reaches_attendees(env, monkeypatch):
     assert again.json()["notified"] == 0
 
 
-# â”€â”€ Email via ZeptoMail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Email via ZeptoMail ───────────────────────────────────────────────────
 def test_emails_go_through_zeptomail(monkeypatch):
     import httpx
     import app.services.email_service as es
@@ -636,7 +636,7 @@ def test_emails_go_through_zeptomail(monkeypatch):
     assert es.EmailService.send_event_thank_you("a@example.com", "Al", "Gala", "Thanks!", []) is False
 
 
-# â”€â”€ Launch feedback (test APK 3.2.0 review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Launch feedback (test APK 3.2.0 review) ───────────────────────────────
 def test_login_keeps_members_signed_in(env):
     """Login hands out a long-lived backend token (Supabase's expires in an hour), and the
     app can swap any valid token for a fresh one each time it opens."""
@@ -871,3 +871,32 @@ def test_admin_uploads_reward_image(env):
     assert c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "application/pdf", "data_base64": jpg}).status_code == 400
     big = base64.b64encode(b"x" * (5 * 1024 * 1024 + 1)).decode()
     assert c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "image/png", "data_base64": big}).status_code == 400
+
+def test_launch_qr_gives_launch_bonus(env):
+    """Scanning the launch QR code opens /download, which records the visit with the launch
+    code; the app then fills it in at sign-up and the new member gets the launch bonus
+    (500) instead of the normal welcome points."""
+    c, db = env["c"], env["db"]
+    phone = {"CF-Connecting-IP": "203.0.113.77"}
+    _setting(db, "welcome_points", "50")
+    r = c.post("/api/v1/referrals/invite/launch", headers=phone)
+    assert r.json() == {"valid": True, "code": "LAUNCH", "inviter_first_name": None, "launch": True}
+    assert c.get("/api/v1/referrals/pending-invite", headers=phone).json() == {"code": "LAUNCH"}
+
+    r = c.post("/api/v1/auth/register", json={"full_name": "Quinn Ray", "email": "quinn@example.com", "password": "Secret123!",
+                                            "mobile": "+61411000777", "referral_code": "LAUNCH"})
+    assert r.status_code == 200, r.text
+    quinn = next(u for u in db.tables["users"] if u["email"] == "quinn@example.com")
+    assert quinn["total_points"] == 500 and quinn.get("referred_by") is None
+    assert any(t["description"] == "Launch welcome bonus" for t in tx(db, quinn["id"]))
+
+    # Without the code: normal welcome points. Bonus set to 0: launch code gives normal points.
+    c.post("/api/v1/auth/register", json={"full_name": "Una Ng", "email": "una@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000778"})
+    assert next(u for u in db.tables["users"] if u["email"] == "una@example.com")["total_points"] == 50
+    _setting(db, "launch_bonus_points", "0")
+    c.post("/api/v1/auth/register", json={"full_name": "Vic Oh", "email": "vic@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000779", "referral_code": "LAUNCH"})
+    assert next(u for u in db.tables["users"] if u["email"] == "vic@example.com")["total_points"] == 50
+    _setting(db, "launch_bonus_points", "500")
+    _setting(db, "welcome_points", "100")

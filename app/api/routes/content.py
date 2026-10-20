@@ -19,6 +19,8 @@ DEFAULTS = {
     "contact_card_title": "Contact us",
     "tiers_intro": "",
     "welcome_points": "100",
+    "launch_code": "LAUNCH",
+    "launch_bonus_points": "500",
     "contact_name": "Your Reliiance broker",
     "contact_phone": "",
     "contact_email": "",

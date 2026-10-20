@@ -15,7 +15,7 @@ from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile
-from app.services.invite_service import link_new_member, inviter_for
+from app.services.invite_service import link_new_member, inviter_for, is_launch_code
 from app.services.notify_service import PREF_KEYS, prefs_for
 import random
 import string
@@ -55,13 +55,16 @@ def generate_referral_code(length=8):
     return ''.join(random.choice(characters) for i in range(length))
 
 
-def _award_welcome_points(user_id: str, label: str = "") -> int:
-    """Welcome points for a brand-new member (amount set on the admin Program settings page)."""
-    points = get_int_setting("welcome_points")
+def _award_welcome_points(user_id: str, label: str = "", joined_with: str = None) -> int:
+    """Welcome points for a brand-new member (amount set on the admin Program settings page).
+    People who joined from the launch QR codes get the launch bonus instead, when it's on."""
+    points, description = get_int_setting("welcome_points"), "Welcome Bonus"
+    if joined_with and is_launch_code(joined_with) and get_int_setting("launch_bonus_points") > 0:
+        points, description = get_int_setting("launch_bonus_points"), "Launch welcome bonus"
     if points <= 0:
         return 0
     try:
-        PointsService.award_points(user_id=user_id, points=points, type="signup_bonus", description="Welcome Bonus")
+        PointsService.award_points(user_id=user_id, points=points, type="signup_bonus", description=description)
         supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
         return points
     except Exception as e:
@@ -72,7 +75,7 @@ def _award_welcome_points(user_id: str, label: str = "") -> int:
 def _welcome_new_member(user_id: str, email: str, full_name: str, referral_code: str, label: str = "",
                         joined_with: str = None) -> None:
     """Welcome points and email. joined_with: the friend's referral code they signed up with, if any."""
-    points = _award_welcome_points(user_id, label)
+    points = _award_welcome_points(user_id, label, joined_with)
     if email:
         inviter = inviter_for(joined_with) if joined_with else None
         inviter_name = ((inviter or {}).get("full_name") or "").strip() or None

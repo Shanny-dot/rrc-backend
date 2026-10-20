@@ -41,6 +41,12 @@ def _parse(ts) -> datetime.datetime:
         return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
 
 
+def is_launch_code(code: str) -> bool:
+    """The code behind the launch QR codes (Program settings), not a member's referral code."""
+    launch = clean_code(get_setting("launch_code"))
+    return bool(launch) and clean_code(code) == launch
+
+
 def inviter_for(code: str):
     code = clean_code(code)
     if not code:

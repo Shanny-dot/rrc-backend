@@ -127,7 +127,12 @@ def referral_summary(current_user: dict = Depends(get_current_user)):
 @limiter.limit("30/minute")
 def open_invite(request: Request, code: str):
     """Called by the invite link's welcome page. Returns who invited them (first name only)
-    and remembers the visit so the app can fill in the code after it's installed."""
+    and remembers the visit so the app can fill in the code after it's installed.
+    The launch QR codes use this too, with the launch code (no inviter)."""
+    if invite_service.is_launch_code(code):
+        clean = invite_service.clean_code(code)
+        invite_service.record_click(clean, request)
+        return {"valid": True, "code": clean, "inviter_first_name": None, "launch": True}
     inviter = invite_service.inviter_for(code)
     if not inviter:
         return {"valid": False}
