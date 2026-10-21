@@ -152,7 +152,7 @@ def main():
          "body": "It's been 3 years since your home loan settled. Rates change — ask your broker for a free review.",
          "created_at": NOW.isoformat()},
         {"user_id": demo1, "kind": "bonus_loan_anniversary", "ref": str(TODAY.year), "title": "Happy loan anniversary! +250 points",
-         "body": "Thanks for 3 years with Reliance.", "created_at": NOW.isoformat()},
+         "body": "Thanks for 3 years with Reliiance.", "created_at": NOW.isoformat()},
     ])
 
     # ── Demo 2: new member who joined with Alex's invite link ───────────
