@@ -10,12 +10,12 @@ from app.core.apple_auth import verify_apple_identity_token
 from app.core.social_verify import (
     google_enabled, facebook_enabled, verify_google_id_token, verify_facebook_access_token,
 )
-from app.services.program_service import tier_status, get_int_setting
+from app.services.program_service import tier_status, get_int_setting, get_setting
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile
-from app.services.invite_service import link_new_member, inviter_for, is_launch_code
+from app.services.invite_service import link_new_member, inviter_for
 from app.services.notify_service import PREF_KEYS, prefs_for
 import random
 import string
@@ -55,12 +55,24 @@ def generate_referral_code(length=8):
     return ''.join(random.choice(characters) for i in range(length))
 
 
+def _is_launch_day() -> bool:
+    """True on the launch date (Program settings, Sydney time)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    raw = (get_setting("launch_date") or "").strip()
+    try:
+        return bool(raw) and _dt.datetime.now(ZoneInfo("Australia/Sydney")).date() == _dt.date.fromisoformat(raw)
+    except ValueError:
+        return False
+
+
 def _award_welcome_points(user_id: str, label: str = "", joined_with: str = None) -> int:
-    """Welcome points for a brand-new member (amount set on the admin Program settings page).
-    People who joined from the launch QR codes get the launch bonus instead, when it's on."""
+    """Points for a brand-new member (amounts set on the admin Program settings page):
+    on the launch date everyone who signs up gets the launch bonus instead of the welcome
+    points; on any other day, the welcome points. Either can be 0 (none)."""
     points, description = get_int_setting("welcome_points"), "Welcome Bonus"
-    if joined_with and is_launch_code(joined_with) and get_int_setting("launch_bonus_points") > 0:
-        points, description = get_int_setting("launch_bonus_points"), "Launch welcome bonus"
+    if _is_launch_day():
+        points, description = get_int_setting("launch_bonus_points"), "Launch day bonus"
     if points <= 0:
         return 0
     try:
@@ -73,13 +85,15 @@ def _award_welcome_points(user_id: str, label: str = "", joined_with: str = None
 
 
 def _welcome_new_member(user_id: str, email: str, full_name: str, referral_code: str, label: str = "",
-                        joined_with: str = None) -> None:
-    """Welcome points and email. joined_with: the friend's referral code they signed up with, if any."""
+                        joined_with: str = None, mobile: str = None) -> None:
+    """Welcome points and email, and a "new member" email to staff.
+    joined_with: the friend's referral code they signed up with, if any."""
     points = _award_welcome_points(user_id, label, joined_with)
+    inviter = inviter_for(joined_with) if joined_with else None
+    inviter_name = ((inviter or {}).get("full_name") or "").strip() or None
     if email:
-        inviter = inviter_for(joined_with) if joined_with else None
-        inviter_name = ((inviter or {}).get("full_name") or "").strip() or None
         EmailService.send_welcome_email(email, full_name, referral_code, points, inviter_name)
+    EmailService.send_staff_new_member(full_name, email, mobile, points, inviter_name, label)
 
 def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
     """Make sure a signed-in Supabase account has its public.users member profile.
@@ -370,7 +384,8 @@ def register(request: Request, creds: RegisterCredentials):
             print(f"SMS OTP trigger skipped/error: {otp_err}")
 
         # 6. Welcome points (amount set on the admin Program settings page) and welcome email
-        _welcome_new_member(user.id, creds.email, creds.full_name, unique_ref_code, "(register)", creds.referral_code)
+        _welcome_new_member(user.id, creds.email, creds.full_name, unique_ref_code, "(register)", creds.referral_code,
+                            mobile=creds.mobile)
 
         return TokenResponse(access_token="pending_verification")
 

@@ -445,6 +445,22 @@ class EmailService:
                         _layout("You're invited to an event", body, ("Find out more", invite_link)))
 
     @staticmethod
+    def send_staff_new_member(full_name: str, email: str, mobile: str, points: int, inviter_name: str = None,
+                              how: str = "") -> bool:
+        """Tells staff (ADMIN_EMAIL) that someone has signed up."""
+        if not settings.ADMIN_EMAIL:
+            return False
+        via = {"(register)": "Email sign-up", "(google)": "Google", "(apple)": "Apple", "(facebook)": "Facebook"}.get(how, "")
+        body = f"""
+        <p>A new member has joined {_esc(settings.FROM_NAME)}.</p>
+        {_box([("Name", full_name), ("Email", email), ("Mobile", mobile), ("Signed up with", via),
+               ("Invited by", inviter_name), ("Points given", f"{points:,}" if points else "0")])}
+        <p style="color:#777;font-size:13px">See all members on the admin website's Users page.</p>
+        """
+        return _deliver(settings.ADMIN_EMAIL, f"New member: {full_name or email or 'unknown'}",
+                        _layout("New member signed up", body), reply_to=email or None)
+
+    @staticmethod
     def send_staff_feedback(to_email: str, member: dict, feedback: dict):
         name = html.escape(member.get("full_name") or "A member")
         contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))

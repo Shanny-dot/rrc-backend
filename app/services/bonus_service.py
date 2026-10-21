@@ -1,6 +1,7 @@
-"""Surprise bonus points (birthday, loan anniversary, first successful referral). Each
-amount is a program setting; 0 means that bonus is off. Every bonus is paid at most once
-per occasion, guarded by notification_log."""
+"""Surprise bonus points. Only the birthday bonus is in use; the loan anniversary and first
+successful referral bonuses were retired (Oct 2026) — referrals now earn the single
+"Referral bonus" when moved to Points added. Each amount is a program setting; 0 means off.
+Every bonus is paid at most once per occasion, guarded by notification_log."""
 from app.services import notify_service
 from app.services.points_service import PointsService
 from app.services.program_service import get_int_setting

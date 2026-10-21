@@ -50,10 +50,11 @@ SETTING_DEFAULTS = {
     "update_message": "",
     "invite_base_url": "https://rrc-admin.vercel.app/join",
     "welcome_points": "100",
-    # Launch QR codes: people who scan them (or type the code at sign-up) get these points
-    # instead of the normal welcome points. 0 switches it off.
+    # Launch day: everyone who signs up on launch_date (Sydney time) gets launch_bonus_points
+    # instead of the welcome points. launch_code is what the launch QR codes fill in.
     "launch_code": "LAUNCH",
-    "launch_bonus_points": "500",
+    "launch_bonus_points": "100",
+    "launch_date": "2026-10-25",
     "contact_card_title": "Contact us",
     "tiers_intro": "",
     "redemption_statuses": json.dumps(REDEMPTION_STATUS_DEFAULTS),

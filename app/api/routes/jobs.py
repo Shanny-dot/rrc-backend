@@ -97,8 +97,7 @@ def birthdays_and_anniversaries(today: datetime.date, members: list) -> dict:
                         f"It's been {label} since your home loan settled. Rates change — ask your broker for a free review.",
                         {"years": years}):
                     out["loan_checkins"] += 1
-            if BonusService.loan_anniversary(m["id"], today.year, years):
-                out["anniversary_bonuses"] += 1
+            # The loan anniversary bonus was removed from the program (client request, Oct 2026).
     return out
 
 

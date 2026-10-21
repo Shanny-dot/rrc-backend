@@ -7,6 +7,7 @@ from app.services.program_service import activity_for_user, _parse_ts
 router = APIRouter()
 
 REFERRAL_STAGE_TEXT = {
+    "pending": "We're following up with {name}.",
     "contacted": "Reliiance has contacted {name}.",
     "loan_in_progress": "{name}'s loan is in progress.",
     "settled": "{name}'s loan has settled. Your points are on the way.",
@@ -14,7 +15,9 @@ REFERRAL_STAGE_TEXT = {
     "registered": "{name} has signed up to Reliiance Rewards.",
 }
 
-LOGGED_KINDS = {"loan_checkin": "loan", "points_expiring": "points", "event_thanks": "event"}
+LOGGED_KINDS = {"loan_checkin": "loan", "points_expiring": "points", "event_thanks": "event",
+                "event_reminder": "event", "event_reminder_7d": "event", "event_update": "event",
+                "event_cancelled": "event", "tier_upgrade": "points"}
 
 
 def _iso(ts):
@@ -38,10 +41,13 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
             "at": a.get("created_at"),
         })
 
-    reds = supabase_admin.table("redemptions").select("id, status, actioned_at, sent_at, rewards(title)") \
+    reds = supabase_admin.table("redemptions").select("id, status, requested_at, actioned_at, sent_at, rewards(title)") \
         .eq("user_id", user_id).execute().data or []
     for r in reds:
         title = (r.get("rewards") or {}).get("title") or "Your reward"
+        if r.get("requested_at"):
+            items.append({"id": f"red-new-{r['id']}", "kind": "reward", "title": f"{title} requested",
+                          "body": f"Reference {str(r['id'])[:8].upper()} — we'll keep you updated.", "at": r["requested_at"]})
         if r.get("status") == "in_progress" and r.get("actioned_at"):
             items.append({"id": f"red-wip-{r['id']}", "kind": "reward", "title": f"{title} in progress",
                           "body": "Our team is working on your reward.", "at": r["actioned_at"]})
@@ -64,11 +70,21 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
                           "body": text.format(name=f.get("referred_name") or "Your friend"), "at": f["stage_updated_at"]})
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    rsvps = supabase_admin.table("event_rsvps").select("id, cancelled, events(title, event_date, location)") \
+    rsvps = supabase_admin.table("event_rsvps").select("id, cancelled, rsvp_at, cancelled_at, attended, attended_at, events(title, event_date, location)") \
         .eq("user_id", user_id).execute().data or []
     for v in rsvps:
         ev = v.get("events") or {}
         start = _parse_ts(ev.get("event_date"))
+        name = ev.get("title") or "the event"
+        if v.get("rsvp_at"):
+            items.append({"id": f"rsvp-{v['id']}", "kind": "event", "title": f"You're going: {name}",
+                          "body": ev.get("location") or "RSVP confirmed.", "at": v["rsvp_at"]})
+        if v.get("cancelled") and v.get("cancelled_at"):
+            items.append({"id": f"rsvp-x-{v['id']}", "kind": "event", "title": f"RSVP cancelled: {name}",
+                          "body": "You're no longer booked in.", "at": v["cancelled_at"]})
+        if v.get("attended") and v.get("attended_at"):
+            items.append({"id": f"rsvp-in-{v['id']}", "kind": "event", "title": f"Checked in: {name}",
+                          "body": "Thanks for coming!", "at": v["attended_at"]})
         if v.get("cancelled") or not start:
             continue
         if now <= start <= now + datetime.timedelta(hours=48):

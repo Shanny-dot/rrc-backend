@@ -456,7 +456,7 @@ def test_book_a_time_reaches_staff(env):
     assert c.get("/api/v1/admin/broker-requests", headers=env["member"]).status_code == 403
     items = c.get("/api/v1/admin/broker-requests", headers=env["admin"]).json()
     pretty = datetime.date.fromisoformat(day).strftime("%a %d %b %Y")
-    assert items[0]["note"] == f"Call booking: {pretty}, morning. Best on my mobile"
+    assert items[0]["note"] == f"Contact request: {pretty}, morning. Best on my mobile"
     assert items[0]["status"] == "new" and items[0]["users"]["email"] == "manoj@example.com"
     r = c.put(f"/api/v1/admin/broker-requests/{items[0]['id']}", headers=env["admin"], json={"status": "contacted", "staff_note": "Called Tue"})
     assert r.status_code == 200 and r.json()["status"] == "contacted" and r.json()["staff_note"] == "Called Tue"
@@ -501,24 +501,27 @@ def test_notification_settings_mute_alerts(env, monkeypatch):
     assert sent[-1][:3] == ("tok-manoj", "+25 points added", "Thanks!")
 
 
-def test_referral_progress_alert_and_first_referral_bonus(env, monkeypatch):
+def test_referral_stages_and_referral_bonus(env, monkeypatch):
+    """Five stages (Invited, Pending, Signed up, Points added, Not proceeding). The single
+    Referral bonus is added when a referral moves to Points added, once, with no override."""
     c, db = env["c"], env["db"]
     sent = _capture_push(monkeypatch)
     user(db, FRIEND_ID)["fcm_token"] = "tok-old"
-    _setting(db, "bonus_first_referral_points", "250")
-    refs = []
-    for i, name in enumerate(("Ann", "Ben")):
-        rid = f"44444444-0000-4000-8000-00000000010{i}"
-        db.tables["referrals"].append({"id": rid, "referrer_id": FRIEND_ID, "referred_name": name, "status": "invited", "points_earned": 0})
-        refs.append(rid)
+    _setting(db, "referral_points", "75")
+    _setting(db, "bonus_first_referral_points", "250")  # retired: must no longer pay anything
+    rid = "44444444-0000-4000-8000-000000000100"
+    db.tables["referrals"].append({"id": rid, "referrer_id": FRIEND_ID, "referred_name": "Ann", "status": "invited", "points_earned": 0})
     before = user(db, FRIEND_ID)["total_points"]
-    c.put(f"/api/v1/admin/referrals/{refs[0]}/stage", headers=env["admin"], json={"status": "contacted"})
-    assert sent[-1][1:3] == ("Referral update", "Reliiance has contacted Ann.")
-    c.put(f"/api/v1/admin/referrals/{refs[0]}/stage", headers=env["admin"], json={"status": "settled"})
-    c.put(f"/api/v1/admin/referrals/{refs[1]}/stage", headers=env["admin"], json={"status": "settled"})
-    bonuses = [t for t in tx(db, FRIEND_ID) if t["type"] == "bonus"]
-    assert len(bonuses) == 1 and bonuses[0]["points"] == 250
-    assert user(db, FRIEND_ID)["total_points"] == before + 250
+    stage = lambda s, **kw: c.put(f"/api/v1/admin/referrals/{rid}/stage", headers=env["admin"], json={"status": s, **kw})  # noqa: E731
+    assert stage("pending").status_code == 200
+    assert sent[-1][1:3] == ("Referral update", "We're following up with Ann.")
+    assert stage("registered").status_code == 200
+    assert stage("rewarded", points=9999).status_code == 200   # an override in the request is ignored
+    assert user(db, FRIEND_ID)["total_points"] == before + 75
+    assert not [t for t in tx(db, FRIEND_ID) if t["type"] == "bonus"]
+    stage("rewarded")
+    assert user(db, FRIEND_ID)["total_points"] == before + 75, "referral bonus paid twice"
+    _setting(db, "referral_points", "500")
 
 
 def test_daily_job_reminders_birthdays_and_loan_checkin(env, monkeypatch):
@@ -872,31 +875,62 @@ def test_admin_uploads_reward_image(env):
     big = base64.b64encode(b"x" * (5 * 1024 * 1024 + 1)).decode()
     assert c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "image/png", "data_base64": big}).status_code == 400
 
-def test_launch_qr_gives_launch_bonus(env):
-    """Scanning the launch QR code opens /download, which records the visit with the launch
-    code; the app then fills it in at sign-up and the new member gets the launch bonus
-    (500) instead of the normal welcome points."""
+def test_launch_day_bonus(env, monkeypatch):
+    """On the launch date (Sydney time) everyone who signs up gets the launch bonus instead
+    of the welcome points; on other days, the welcome points (which can be 0)."""
+    import datetime
+    from zoneinfo import ZoneInfo
     c, db = env["c"], env["db"]
-    phone = {"CF-Connecting-IP": "203.0.113.77"}
+    today = datetime.datetime.now(ZoneInfo("Australia/Sydney")).date()
     _setting(db, "welcome_points", "50")
-    r = c.post("/api/v1/referrals/invite/launch", headers=phone)
-    assert r.json() == {"valid": True, "code": "LAUNCH", "inviter_first_name": None, "launch": True}
+    _setting(db, "launch_bonus_points", "100")
+
+    _setting(db, "launch_date", today.isoformat())
+    c.post("/api/v1/auth/register", json={"full_name": "Quinn Ray", "email": "quinn@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000777"})
+    quinn = next(u for u in db.tables["users"] if u["email"] == "quinn@example.com")
+    assert quinn["total_points"] == 100
+    assert any(t["description"] == "Launch day bonus" for t in tx(db, quinn["id"]))
+
+    _setting(db, "launch_date", (today - datetime.timedelta(days=1)).isoformat())
+    c.post("/api/v1/auth/register", json={"full_name": "Una Ng", "email": "una@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000778", "referral_code": "LAUNCH"})
+    assert next(u for u in db.tables["users"] if u["email"] == "una@example.com")["total_points"] == 50
+
+    _setting(db, "welcome_points", "0")   # welcome points switched off
+    c.post("/api/v1/auth/register", json={"full_name": "Vic Oh", "email": "vic@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000779"})
+    vic = next(u for u in db.tables["users"] if u["email"] == "vic@example.com")
+    assert vic["total_points"] == 0 and not tx(db, vic["id"])
+    _setting(db, "welcome_points", "100")
+
+    # The launch QR page still records the code so the app fills it in.
+    phone = {"CF-Connecting-IP": "203.0.113.77"}
+    assert c.post("/api/v1/referrals/invite/launch", headers=phone).json()["launch"] is True
     assert c.get("/api/v1/referrals/pending-invite", headers=phone).json() == {"code": "LAUNCH"}
 
-    r = c.post("/api/v1/auth/register", json={"full_name": "Quinn Ray", "email": "quinn@example.com", "password": "Secret123!",
-                                            "mobile": "+61411000777", "referral_code": "LAUNCH"})
-    assert r.status_code == 200, r.text
-    quinn = next(u for u in db.tables["users"] if u["email"] == "quinn@example.com")
-    assert quinn["total_points"] == 500 and quinn.get("referred_by") is None
-    assert any(t["description"] == "Launch welcome bonus" for t in tx(db, quinn["id"]))
 
-    # Without the code: normal welcome points. Bonus set to 0: launch code gives normal points.
-    c.post("/api/v1/auth/register", json={"full_name": "Una Ng", "email": "una@example.com", "password": "Secret123!",
-                                          "mobile": "+61411000778"})
-    assert next(u for u in db.tables["users"] if u["email"] == "una@example.com")["total_points"] == 50
-    _setting(db, "launch_bonus_points", "0")
-    c.post("/api/v1/auth/register", json={"full_name": "Vic Oh", "email": "vic@example.com", "password": "Secret123!",
-                                          "mobile": "+61411000779", "referral_code": "LAUNCH"})
-    assert next(u for u in db.tables["users"] if u["email"] == "vic@example.com")["total_points"] == 50
-    _setting(db, "launch_bonus_points", "500")
-    _setting(db, "welcome_points", "100")
+def test_staff_emails_and_bell_updates(env, monkeypatch):
+    """Staff get an email for each new member; members see reward and RSVP updates under the bell."""
+    import app.services.email_service as es
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    from app.api.routes.auth import limiter
+    limiter.reset()  # earlier tests used up the 5-sign-ups-a-minute limit
+    c, db, h = env["c"], env["db"], env["member"]
+    c.post("/api/v1/auth/register", json={"full_name": "Wes Lo", "email": "wes@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000780"})
+    staff = next(e for e in emails if e["to"] == "admin@rrc.com")
+    assert staff["subject"] == "New member: Wes Lo" and "wes@example.com" in staff["html"] and "+61411000780" in staff["html"]
+
+    red = c.post("/api/v1/rewards/22222222-0000-4000-8000-000000000003/redeem", headers=h).json()["id"]
+    ev = c.post("/api/v1/admin/events", headers=env["admin"], json={"title": "Bell Night", "event_date": "2030-08-01T08:00:00Z"}).json()
+    c.post(f"/api/v1/events/{ev['id']}/rsvp", headers=h)
+    c.put(f"/api/v1/admin/events/{ev['id']}", headers=env["admin"], json={"location": "Bondi"})
+    titles = [n["title"] for n in c.get("/api/v1/notifications", headers=h).json()]
+    assert "Toy World Card requested" in titles and "You're going: Bell Night" in titles
+    assert "Event update: Bell Night" in titles
+    c.put(f"/api/v1/admin/redemptions/{red}/status", headers=env["admin"], json={"status": "sent"})  # Mark as sent from Pending
+    titles = [n["title"] for n in c.get("/api/v1/notifications", headers=h).json()]
+    assert "Toy World Card has been sent" in titles

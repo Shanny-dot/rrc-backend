@@ -16,6 +16,8 @@ _PREF_FOR_KIND = {
     "reward": "rewards",
     "event_reminder": "events",
     "event_reminder_7d": "events",
+    "event_update": "events",
+    "event_cancelled": "events",
     "event_thanks": "events",
     "points_expiring": "expiry",
     "points_expired": "expiry",

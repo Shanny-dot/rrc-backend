@@ -8,7 +8,6 @@ from app.schemas.redemption import RedemptionRejectRequest
 from app.services.points_service import PointsService
 from app.services.email_service import EmailService
 from app.services import notify_service
-from app.services.bonus_service import BonusService
 from app.schemas.referral import ReferralStageUpdate
 from app.services.program_service import get_int_setting, redemption_templates, REDEMPTION_STATUSES, event_when, _parse_ts
 from app.services import redemption_service
@@ -257,8 +256,11 @@ def _tell_attendees_about_change(before: dict, after: dict) -> None:
         changes.append(f"New name: {after.get('title')}")
     if not changes:
         return
+    ref = f"{after['id']}:{datetime.datetime.now(datetime.timezone.utc).isoformat()}"
     for r in _event_attendees(after["id"]):
-        notify_service.push(r["user_id"], "event_reminder", f"Event update: {after.get('title')}", changes[0], {"event_id": after["id"]})
+        # Logged too, so it also appears under the bell in the app.
+        notify_service.notify_once(r["user_id"], "event_update", ref, f"Event update: {after.get('title')}",
+                                   "\n".join(changes), {"event_id": after["id"]})
         member = r.get("users") or {}
         if member.get("email"):
             EmailService.send_event_changed(member["email"], member.get("full_name"), after, event_when(after), changes)
@@ -266,8 +268,8 @@ def _tell_attendees_about_change(before: dict, after: dict) -> None:
 
 def _tell_attendees_cancelled(event: dict) -> None:
     for r in _event_attendees(event["id"]):
-        notify_service.push(r["user_id"], "event_reminder", f"Cancelled: {event.get('title')}",
-                            "Sorry — this event has been cancelled.", {"event_id": event["id"]})
+        notify_service.notify_once(r["user_id"], "event_cancelled", str(event["id"]), f"Cancelled: {event.get('title')}",
+                                   "Sorry — this event has been cancelled.", {"event_id": event["id"]})
         member = r.get("users") or {}
         if member.get("email"):
             EmailService.send_event_cancelled(member["email"], member.get("full_name"), event, event_when(event))
@@ -502,8 +504,11 @@ def admin_save_tiers(tiers: list = Body(..., embed=True)):
 
 # Members see three stages: Invited → Pending / signed up → Points added (or Not proceeding).
 # contacted / loan_in_progress / settled are older stages, still accepted and shown as the middle one.
-REFERRAL_STAGES = ["invited", "registered", "contacted", "loan_in_progress", "settled", "rewarded", "closed"]
+# Stages: Invited → Pending → Signed up → Points added (or Not proceeding).
+# contacted / loan_in_progress / settled are older stages, still accepted and shown as Pending.
+REFERRAL_STAGES = ["invited", "pending", "registered", "rewarded", "closed", "contacted", "loan_in_progress", "settled"]
 REFERRAL_PUSH_TEXT = {
+    "pending": "We're following up with {name}.",
     "registered": "{name} has signed up to Reliiance Rewards.",
     "contacted": "Reliiance has contacted {name}.",
     "loan_in_progress": "{name}'s loan is in progress.",
@@ -524,8 +529,8 @@ def admin_list_referrals():
 
 @router.put("/referrals/{id}/stage")
 def update_referral_stage(id: str, body: ReferralStageUpdate):
-    """Move a referral along: invited → contacted → loan_in_progress → settled → rewarded (or closed).
-    Moving to "rewarded" awards the referral points once."""
+    """Move a referral along: invited → pending → signed up → points added (or not proceeding).
+    Moving to "rewarded" (Points added) awards the referral bonus (Program settings) once."""
     status = (body.status or "").strip().lower()
     if status not in REFERRAL_STAGES:
         raise HTTPException(status_code=400, detail=f"Status must be one of: {', '.join(REFERRAL_STAGES)}")
@@ -539,9 +544,9 @@ def update_referral_stage(id: str, body: ReferralStageUpdate):
         update["admin_note"] = body.admin_note
 
     if status == "rewarded" and not (ref.get("points_earned") or 0):
-        points = body.points if body.points is not None else get_int_setting("referral_points")
-        if not points or points <= 0:
-            raise HTTPException(status_code=400, detail="Set the referral points (in the request or the referral_points setting) before rewarding.")
+        points = get_int_setting("referral_points")
+        if points <= 0:
+            raise HTTPException(status_code=400, detail="Set the Referral bonus on the Program settings page before adding points.")
         PointsService.award_points(
             user_id=ref["referrer_id"], points=points, type="referral",
             description=f"Referral reward: {ref.get('referred_name') or 'your friend'}", reference_id=id,
@@ -558,8 +563,6 @@ def update_referral_stage(id: str, body: ReferralStageUpdate):
             title, body = "Referral update", REFERRAL_PUSH_TEXT.get(status, "").format(name=friend)
         if body:
             notify_service.push(ref["referrer_id"], "points" if status == "rewarded" else "referral", title, body, {"referral_id": id})
-        if status in ("settled", "rewarded"):
-            BonusService.first_referral(ref["referrer_id"], friend)
     return resp.data[0] if resp.data else update
 
 # ── Member feedback from the app ───────────────────────────────────────────

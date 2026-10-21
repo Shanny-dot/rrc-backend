@@ -13,7 +13,7 @@ router = APIRouter()
 limiter = Limiter(key_func=client_ip)
 
 TIME_LABELS = {"morning": "morning", "afternoon": "afternoon", "evening": "evening", "anytime": "any time"}
-KINDS = {"call": "Call booking", "loan_review": "Loan review"}
+KINDS = {"call": "Contact request", "loan_review": "Loan review"}
 
 
 class BrokerRequestCreate(BaseModel):
