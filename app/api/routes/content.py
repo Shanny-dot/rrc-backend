@@ -32,9 +32,9 @@ DEFAULTS = {
     "privacy_url": "https://rrc-admin.vercel.app/privacy-policy",
     "help_faq": json.dumps([
         {"q": "How do I earn points?",
-         "a": "You earn points when a friend you refer settles a home loan with Reliiance, when you attend Reliiance events, and through occasional bonuses."},
+         "a": "You earn points when a friend you refer joins Reliiance Rewards, when you attend Reliiance events, and through occasional bonuses."},
         {"q": "When do I get points for a referral?",
-         "a": "Referral points are added once your friend's loan settles. You can follow each referral's progress on the Referrals tab."},
+         "a": "Your referral bonus is added once our team confirms your friend's referral. You can follow each referral's progress (Invited, Pending, Signed up, Points added) on the Referrals tab."},
         {"q": "How do I redeem a reward?",
          "a": "Open the Rewards tab, choose a reward you have enough points for and tap Redeem. Our team reviews the request and you'll get an update when it's approved and sent."},
         {"q": "Why haven't my points shown up yet?",
