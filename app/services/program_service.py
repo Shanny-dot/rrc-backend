@@ -50,8 +50,9 @@ SETTING_DEFAULTS = {
     "update_message": "",
     "invite_base_url": "https://rrc-admin.vercel.app/join",
     "welcome_points": "100",
-    # Launch day: everyone who signs up on launch_date (Sydney time) gets launch_bonus_points
-    # instead of the welcome points. launch_code is what the launch QR codes fill in.
+    # Members who sign up with launch_code (what the launch QR codes fill in) get
+    # launch_bonus_points instead of the welcome points, once mobile and email are verified.
+    # launch_date is kept for reference only.
     "launch_code": "LAUNCH",
     "launch_bonus_points": "100",
     "launch_date": "2026-10-25",

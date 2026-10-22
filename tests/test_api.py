@@ -905,46 +905,36 @@ def test_admin_uploads_reward_image(env):
     big = base64.b64encode(b"x" * (5 * 1024 * 1024 + 1)).decode()
     assert c.post("/api/v1/admin/upload-image", headers=env["admin"], json={"content_type": "image/png", "data_base64": big}).status_code == 400
 
-def test_launch_day_bonus(env, monkeypatch):
-    """On the launch date (Sydney time) everyone who signs up gets the launch bonus instead
-    of the welcome points; on other days, the welcome points (which can be 0)."""
-    import datetime
-    from zoneinfo import ZoneInfo
+def test_launch_bonus_only_for_the_qr_code(env, monkeypatch):
+    """Only people who sign up with the launch QR code (LAUNCH) get the launch bonus instead
+    of the welcome points (which can be 0), and only once mobile and email are verified."""
     c, db = env["c"], env["db"]
-    today = datetime.datetime.now(ZoneInfo("Australia/Sydney")).date()
     _setting(db, "welcome_points", "50")
     _setting(db, "launch_bonus_points", "100")
 
     from app.api.routes.auth import limiter
     limiter.reset()  # earlier tests used up the 5-sign-ups-a-minute limit
 
-    def signup(name, email, mobile, **extra):
+    def register(name, email, mobile, **extra):
         c.post("/api/v1/auth/register", json={"full_name": name, "email": email, "password": "Secret123!",
                                               "mobile": mobile, **extra})
-        _verify_signup(c, mobile, email)
         return next(u for u in db.tables["users"] if u["email"] == email)
 
-    _setting(db, "launch_date", today.isoformat())
-    quinn = signup("Quinn Ray", "quinn@example.com", "+61411000777")
+    quinn = register("Quinn Ray", "quinn@example.com", "+61411000777", referral_code="launch")
+    assert quinn["total_points"] == 0   # nothing until the account is set up
+    _verify_signup(c, "+61411000777", "quinn@example.com")
     assert quinn["total_points"] == 100
-    assert any(t["description"] == "Launch day bonus" for t in tx(db, quinn["id"]))
+    assert any(t["description"] == "Launch bonus" for t in tx(db, quinn["id"]))
 
-    _setting(db, "launch_date", (today - datetime.timedelta(days=1)).isoformat())
-    assert signup("Una Ng", "una@example.com", "+61411000778", referral_code="LAUNCH")["total_points"] == 50
+    una = register("Una Ng", "una@example.com", "+61411000778")   # no QR code: welcome points
+    _verify_signup(c, "+61411000778", "una@example.com")
+    assert una["total_points"] == 50
 
     _setting(db, "welcome_points", "0")   # welcome points switched off
-    vic = signup("Vic Oh", "vic@example.com", "+61411000779")
+    vic = register("Vic Oh", "vic@example.com", "+61411000779", referral_code="MANOJ123")
+    _verify_signup(c, "+61411000779", "vic@example.com")
     assert vic["total_points"] == 0 and not tx(db, vic["id"])
     _setting(db, "welcome_points", "100")
-
-    # Signed up on launch day but only verified the day after: still the launch bonus.
-    c.post("/api/v1/auth/register", json={"full_name": "Late Lee", "email": "late@example.com", "password": "Secret123!",
-                                          "mobile": "+61411000770"})
-    late = next(u for u in db.tables["users"] if u["email"] == "late@example.com")
-    late["created_at"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()
-    _verify_signup(c, "+61411000770", "late@example.com")
-    assert late["total_points"] == 100
-
     # The launch QR page still records the code so the app fills it in.
     phone = {"CF-Connecting-IP": "203.0.113.77"}
     assert c.post("/api/v1/referrals/invite/launch", headers=phone).json()["launch"] is True
@@ -990,7 +980,6 @@ def test_points_only_after_mobile_and_email_verified(env, monkeypatch):
     monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
     sent_sms = _capture_guni(monkeypatch)
     c, db = env["c"], env["db"]
-    _setting(db, "launch_date", "2000-01-01")
     _setting(db, "welcome_points", "50")
 
     r = c.post("/api/v1/auth/register", json={"full_name": "Xavi Po", "email": "Xavi@Example.com", "password": "Secret123!",
@@ -1044,7 +1033,6 @@ def test_social_signup_needs_a_verified_mobile(env, monkeypatch):
     monkeypatch.setattr(auth, "verify_google_id_token", lambda t: {"email": "gina@example.com", "name": "Gina Ho"})
     _capture_guni(monkeypatch)
     c, db = env["c"], env["db"]
-    _setting(db, "launch_date", "2000-01-01")
     _setting(db, "welcome_points", "100")
     r = c.post("/api/v1/auth/social-login", json={"provider": "google", "id_token": "x"})
     assert r.status_code == 200, r.text

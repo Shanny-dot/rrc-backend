@@ -28,7 +28,8 @@ COLUMNS = {
               "postal_code", "country", "home_ownership", "annual_income", "total_points", "bonus_points_granted",
               "profile_complete", "referral_code", "referred_by", "is_admin", "fcm_token", "created_at", "deleted_at",
               "loan_settled_on", "notification_prefs",
-              "mobile_verified_at", "email_verified_at", "welcomed_at", "signup_method"],  # 010
+              "mobile_verified_at", "email_verified_at", "welcomed_at", "signup_method",  # 010
+              "signup_code"],  # 011
     "events": ["id", "title", "description", "location", "event_date", "image_url", "points_for_attending",
                "points_for_referring", "capacity", "is_active", "created_at", "category", "thank_you_sent_at",
                "points_for_attending_max", "points_for_referring_max",  # 008

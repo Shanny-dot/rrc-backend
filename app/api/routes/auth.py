@@ -15,7 +15,7 @@ from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile, issue_code, code_matches
-from app.services.invite_service import link_new_member
+from app.services.invite_service import link_new_member, is_launch_code, clean_code
 from app.services.notify_service import PREF_KEYS, prefs_for
 import random
 import string
@@ -55,41 +55,17 @@ def generate_referral_code(length=8):
     return ''.join(random.choice(characters) for i in range(length))
 
 
-def _sydney_date(created_at=None):
-    """The Sydney calendar date of a timestamp (an ISO string), or of now."""
-    import datetime as _dt
-    from zoneinfo import ZoneInfo
-    sydney = ZoneInfo("Australia/Sydney")
-    if created_at:
-        try:
-            stamp = _dt.datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
-            return (stamp if stamp.tzinfo else stamp.replace(tzinfo=_dt.timezone.utc)).astimezone(sydney).date()
-        except ValueError:
-            pass
-    return _dt.datetime.now(sydney).date()
-
-
-def _is_launch_day(on=None) -> bool:
-    """True if on (a date; default today, Sydney time) is the launch date in Program settings."""
-    import datetime as _dt
-    raw = (get_setting("launch_date") or "").strip()
-    try:
-        return bool(raw) and (on or _sydney_date()) == _dt.date.fromisoformat(raw)
-    except ValueError:
-        return False
-
-
-def _welcome_points_for(joined_on=None) -> tuple:
+def _welcome_points_for(row: dict) -> tuple:
     """(points, description) for a new member (amounts set on the admin Program settings page):
-    members who signed up on the launch date get the launch bonus instead of the welcome
-    points, even if they finish verifying later. Either can be 0 (none)."""
-    if _is_launch_day(joined_on):
-        return get_int_setting("launch_bonus_points"), "Launch day bonus"
+    members who signed up with the launch QR code get the launch bonus instead of the welcome
+    points. Either can be 0 (none)."""
+    if is_launch_code(row.get("signup_code") or ""):
+        return get_int_setting("launch_bonus_points"), "Launch bonus"
     return get_int_setting("welcome_points"), "Welcome Bonus"
 
 
-def _award_welcome_points(user_id: str, label: str = "", joined_on=None) -> int:
-    points, description = _welcome_points_for(joined_on)
+def _award_welcome_points(user_id: str, label: str = "", row: dict = None) -> int:
+    points, description = _welcome_points_for(row or {})
     if points <= 0:
         return 0
     try:
@@ -124,7 +100,7 @@ def _finish_signup_if_verified(user_id: str):
     if not claimed:
         return None
     label = SIGNUP_LABELS.get(row.get("signup_method") or "email", "(register)")
-    points = _award_welcome_points(user_id, label, _sydney_date(row.get("created_at")))
+    points = _award_welcome_points(user_id, label, row)
     inviter = None
     if row.get("referred_by"):
         found = supabase_admin.table("users").select("full_name").eq("id", row["referred_by"]).execute().data or []
@@ -152,7 +128,7 @@ def _verification_status(row: dict) -> dict:
     """What the app shows on the "Verify your account" card."""
     pending = None
     if not row.get("welcomed_at"):
-        pending = _welcome_points_for(_sydney_date(row.get("created_at")))[0]
+        pending = _welcome_points_for(row)[0]
     return {
         "mobile_verified": bool(row.get("mobile_verified_at")),
         "email_verified": bool(row.get("email_verified_at")),
@@ -209,6 +185,7 @@ def _sign_in_social_member(email: str, full_name: str, provider: str, referral_c
             "referral_code": code,
             "profile_complete": False,
             "signup_method": provider,
+            "signup_code": clean_code(referral_code) if referral_code else None,
             "email_verified_at": _now_iso(),  # Google / Facebook confirmed the address
         }).execute()
         if referral_code:
@@ -262,6 +239,7 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False,
                     "signup_method": creds.provider,
+                    "signup_code": clean_code(creds.referral_code) if creds.referral_code else None,
                     "email_verified_at": _now_iso() if user.email else None,
                 }).execute()
                 if creds.referral_code:
@@ -300,6 +278,7 @@ def social_login(creds: SocialLoginRequest):
                     "referral_code": ref_code,
                     "profile_complete": False,
                     "signup_method": "apple",
+                    "signup_code": clean_code(creds.referral_code) if creds.referral_code else None,
                     # Apple confirmed a real address; a made-up placeholder must be replaced and verified.
                     "email_verified_at": _now_iso() if claims.get("email") else None,
                 }).execute()
@@ -431,6 +410,7 @@ def register(request: Request, creds: RegisterCredentials):
             "total_points": 0,
             "bonus_points_granted": False,
             "signup_method": "email",
+            "signup_code": clean_code(creds.referral_code) if creds.referral_code else None,
         }
 
         # Insert user via admin to bypass constraints if needed on registration.
