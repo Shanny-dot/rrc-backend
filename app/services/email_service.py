@@ -1,5 +1,6 @@
 import base64
 import html
+import os
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -20,12 +21,15 @@ _EMAIL_ENABLED = _SMTP or bool((settings.ZEPTOMAIL_API_KEY or settings.RESEND_AP
 GOLD = "#FAB95B"
 
 
-def _logo_url() -> str:
-    """The email banner logo (from "Reliiance Rewards logofor email.pdf"), served by the admin website
-    (same site as FRONTEND_URL)."""
-    from urllib.parse import urlsplit
-    parts = urlsplit(str(settings.FRONTEND_URL))
-    return f"{parts.scheme}://{parts.netloc}/logo-email.png"
+# The email banner logo (from "Reliiance Rewards logofor email.pdf"), sent inside every email
+# rather than linked, so it shows even if the website moves or blocks image requests.
+LOGO_CID = "rrclogo"
+_LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "email_logo.png")
+try:
+    with open(_LOGO_PATH, "rb") as _f:
+        _LOGO_B64 = base64.b64encode(_f.read()).decode()
+except OSError:
+    _LOGO_B64 = ""
 
 
 def _zepto_address(value):
@@ -109,7 +113,7 @@ def _layout(heading: str, body_html: str, button: tuple = None) -> str:
     <div style="background:#f4f4f4;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">
       <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden">
         <div style="background:#201D1D;padding:0;color:{GOLD};font-weight:bold;font-size:18px;letter-spacing:1px;text-align:center">
-          <img src="{_esc(_logo_url())}" alt="{_esc(settings.FROM_NAME)}" width="560" style="display:block;width:100%;max-width:560px;height:auto;border:0">
+          <img src="cid:{LOGO_CID}" alt="{_esc(settings.FROM_NAME)}" width="560" style="display:block;width:100%;max-width:560px;height:auto;border:0">
         </div>
         <div style="padding:24px;color:#222;font-size:15px;line-height:1.55">
           <h2 style="margin:0 0 14px;font-size:21px;color:#111">{heading}</h2>
@@ -132,6 +136,8 @@ def _deliver(to_email: str, subject: str, html_content: str, reply_to: str = Non
         return False
     if not to_email:
         return False
+    if _LOGO_B64 and f"cid:{LOGO_CID}" in html_content:
+        inline_images = [{"cid": LOGO_CID, "mime_type": "image/png", "content": _LOGO_B64}] + list(inline_images or [])
     try:
         _send({"from": FROM_EMAIL, "to": to_email, "subject": subject, "html": html_content,
                "reply_to": reply_to or None, "inline_images": inline_images, "attachments": attachments})

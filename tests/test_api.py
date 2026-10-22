@@ -745,7 +745,8 @@ def test_event_points_range_and_rsvp_emails(env, monkeypatch):
     monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
     monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
     assert c.post(f"/api/v1/events/{ev['id']}/rsvp", headers=h).status_code == 200
-    assert emails[-1]["subject"] == "You're going: Gala" and emails[-1]["inline_images"][0]["cid"] == "rsvpqr"
+    assert emails[-1]["subject"] == "You're going: Gala"
+    assert [i["cid"] for i in emails[-1]["inline_images"]] == ["rrclogo", "rsvpqr"]  # logo sent inside every email
     assert "Wednesday 1 May 2030, 7 pm" in emails[-1]["html"]  # Sydney time
     assert c.delete(f"/api/v1/events/{ev['id']}/rsvp", headers=h).status_code == 200
     assert emails[-1]["subject"] == "RSVP cancelled: Gala"
