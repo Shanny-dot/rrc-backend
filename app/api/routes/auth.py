@@ -647,7 +647,10 @@ def refresh_token(current_user: dict = Depends(get_current_user)):
 def _site_origin() -> str:
     """https://host of the admin website (FRONTEND_URL may point at a page such as /login)."""
     from urllib.parse import urlsplit
-    parts = urlsplit(str(settings.FRONTEND_URL))
+    url = str(settings.FRONTEND_URL or "https://admin.reliiancerewards.com.au")
+    if "vercel.app" in url:
+        return "https://admin.reliiancerewards.com.au"
+    parts = urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}"
 
 

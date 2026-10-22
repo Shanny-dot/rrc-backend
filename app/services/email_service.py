@@ -15,8 +15,8 @@ from app.core.config import settings
 #   3. Resend.
 _SMTP = bool(settings.SMTP_USER and settings.SMTP_PASSWORD)
 resend.api_key = settings.RESEND_API_KEY or ""
-FROM_EMAIL = settings.FROM_EMAIL or settings.SMTP_USER or "noreply@rrcapp.com"
-_EMAIL_ENABLED = _SMTP or bool((settings.ZEPTOMAIL_API_KEY or settings.RESEND_API_KEY) and settings.FROM_EMAIL)
+FROM_EMAIL = settings.FROM_EMAIL or settings.SMTP_USER or "noreply@reliiancerewards.com.au"
+_EMAIL_ENABLED = _SMTP or bool(settings.ZEPTOMAIL_API_KEY) or bool(settings.RESEND_API_KEY)
 
 GOLD = "#FAB95B"
 
@@ -153,7 +153,10 @@ def _first(name: str) -> str:
 
 def _site(path: str) -> str:
     from urllib.parse import urlsplit
-    parts = urlsplit(str(settings.FRONTEND_URL))
+    url = str(settings.FRONTEND_URL or "https://admin.reliiancerewards.com.au")
+    if "vercel.app" in url:
+        return f"https://admin.reliiancerewards.com.au{path}"
+    parts = urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}{path}"
 
 
