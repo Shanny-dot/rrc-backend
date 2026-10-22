@@ -21,10 +21,10 @@ GOLD = "#FAB95B"
 
 
 def _logo_url() -> str:
-    """The full logo, served by the admin website (same site as FRONTEND_URL)."""
+    """The square logo tile (same artwork as the app icon), served by the admin website (same site as FRONTEND_URL)."""
     from urllib.parse import urlsplit
     parts = urlsplit(str(settings.FRONTEND_URL))
-    return f"{parts.scheme}://{parts.netloc}/logo-full.png"
+    return f"{parts.scheme}://{parts.netloc}/logo-tile.png"
 
 
 def _zepto_address(value):
@@ -107,8 +107,8 @@ def _layout(heading: str, body_html: str, button: tuple = None) -> str:
     return f"""
     <div style="background:#f4f4f4;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">
       <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden">
-        <div style="background:#0A0A0A;padding:18px 24px;color:{GOLD};font-weight:bold;font-size:18px;letter-spacing:1px">
-          <img src="{_esc(_logo_url())}" alt="{_esc(settings.FROM_NAME)}" width="200" style="display:block;width:200px;max-width:70%;height:auto;border:0">
+        <div style="background:#0A0A0A;padding:20px 24px;color:{GOLD};font-weight:bold;font-size:18px;letter-spacing:1px;text-align:center">
+          <img src="{_esc(_logo_url())}" alt="{_esc(settings.FROM_NAME)}" width="130" style="display:block;margin:0 auto;width:130px;height:auto;border:0">
         </div>
         <div style="padding:24px;color:#222;font-size:15px;line-height:1.55">
           <h2 style="margin:0 0 14px;font-size:21px;color:#111">{heading}</h2>
