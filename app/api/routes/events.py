@@ -11,6 +11,7 @@ import uuid
 
 router = APIRouter()
 
+@router.get("", response_model=List[EventInDB], include_in_schema=False)
 @router.get("/", response_model=List[EventInDB])
 def list_events():
     resp = supabase_admin.table("events").select("*").eq("is_active", True).order("event_date", desc=False).execute()

@@ -19,6 +19,7 @@ def _with_defaults(reward: dict, default_delivery: str) -> dict:
     return reward
 
 
+@router.get("", response_model=List[RewardInDB], include_in_schema=False)
 @router.get("/", response_model=List[RewardInDB])
 def list_rewards(category: Optional[str] = None):
     query = supabase_admin.table("rewards").select("*").eq("is_active", True)
