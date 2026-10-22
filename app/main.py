@@ -18,9 +18,24 @@ async def json_errors(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {exc}"[:500]})
 
 # CORS setup (added after json_errors, so it wraps it and error responses keep CORS headers)
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
+    "https://rrc-admin.vercel.app",
+    "https://admin.reliiancerewards.com.au",
+    "http://admin.reliiancerewards.com.au",
+    "https://reliiancerewards.com.au",
+    "http://reliiancerewards.com.au",
+    "https://www.reliiancerewards.com.au",
+    "http://www.reliiancerewards.com.au",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https?://.*(reliiancerewards\.com\.au|vercel\.app|localhost)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
