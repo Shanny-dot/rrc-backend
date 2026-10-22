@@ -14,8 +14,8 @@ from app.services.program_service import tier_status, get_int_setting, get_setti
 from app.schemas.user import UserCreate, UserUpdate, TokenResponse
 from app.services.email_service import EmailService
 from app.services.points_service import PointsService
-from app.services.sms_service import SmsService, format_mobile
-from app.services.invite_service import link_new_member, inviter_for
+from app.services.sms_service import SmsService, format_mobile, issue_code, code_matches
+from app.services.invite_service import link_new_member
 from app.services.notify_service import PREF_KEYS, prefs_for
 import random
 import string
@@ -55,24 +55,41 @@ def generate_referral_code(length=8):
     return ''.join(random.choice(characters) for i in range(length))
 
 
-def _is_launch_day() -> bool:
-    """True on the launch date (Program settings, Sydney time)."""
+def _sydney_date(created_at=None):
+    """The Sydney calendar date of a timestamp (an ISO string), or of now."""
     import datetime as _dt
     from zoneinfo import ZoneInfo
+    sydney = ZoneInfo("Australia/Sydney")
+    if created_at:
+        try:
+            stamp = _dt.datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            return (stamp if stamp.tzinfo else stamp.replace(tzinfo=_dt.timezone.utc)).astimezone(sydney).date()
+        except ValueError:
+            pass
+    return _dt.datetime.now(sydney).date()
+
+
+def _is_launch_day(on=None) -> bool:
+    """True if on (a date; default today, Sydney time) is the launch date in Program settings."""
+    import datetime as _dt
     raw = (get_setting("launch_date") or "").strip()
     try:
-        return bool(raw) and _dt.datetime.now(ZoneInfo("Australia/Sydney")).date() == _dt.date.fromisoformat(raw)
+        return bool(raw) and (on or _sydney_date()) == _dt.date.fromisoformat(raw)
     except ValueError:
         return False
 
 
-def _award_welcome_points(user_id: str, label: str = "", joined_with: str = None) -> int:
-    """Points for a brand-new member (amounts set on the admin Program settings page):
-    on the launch date everyone who signs up gets the launch bonus instead of the welcome
-    points; on any other day, the welcome points. Either can be 0 (none)."""
-    points, description = get_int_setting("welcome_points"), "Welcome Bonus"
-    if _is_launch_day():
-        points, description = get_int_setting("launch_bonus_points"), "Launch day bonus"
+def _welcome_points_for(joined_on=None) -> tuple:
+    """(points, description) for a new member (amounts set on the admin Program settings page):
+    members who signed up on the launch date get the launch bonus instead of the welcome
+    points, even if they finish verifying later. Either can be 0 (none)."""
+    if _is_launch_day(joined_on):
+        return get_int_setting("launch_bonus_points"), "Launch day bonus"
+    return get_int_setting("welcome_points"), "Welcome Bonus"
+
+
+def _award_welcome_points(user_id: str, label: str = "", joined_on=None) -> int:
+    points, description = _welcome_points_for(joined_on)
     if points <= 0:
         return 0
     try:
@@ -84,16 +101,64 @@ def _award_welcome_points(user_id: str, label: str = "", joined_with: str = None
         return 0
 
 
-def _welcome_new_member(user_id: str, email: str, full_name: str, referral_code: str, label: str = "",
-                        joined_with: str = None, mobile: str = None) -> None:
-    """Welcome points and email, and a "new member" email to staff.
-    joined_with: the friend's referral code they signed up with, if any."""
-    points = _award_welcome_points(user_id, label, joined_with)
-    inviter = inviter_for(joined_with) if joined_with else None
+SIGNUP_LABELS = {"email": "(register)", "google": "(google)", "apple": "(apple)", "facebook": "(facebook)"}
+
+
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _finish_signup_if_verified(user_id: str):
+    """Once a new member's mobile and email are both verified: welcome points and email, and
+    the "new member" email to staff — exactly once. Returns the points given, or None if the
+    member isn't fully verified yet (or was already welcomed)."""
+    rows = supabase_admin.table("users").select("*").eq("id", user_id).execute().data or []
+    row = rows[0] if rows else None
+    if (not row or row.get("deleted_at") or row.get("welcomed_at")
+            or not (row.get("mobile_verified_at") and row.get("email_verified_at"))):
+        return None
+    # Claim the welcome first, so two verifications arriving together can't both award it.
+    claimed = supabase_admin.table("users").update({"welcomed_at": _now_iso()}) \
+        .eq("id", user_id).is_("welcomed_at", "null").execute().data
+    if not claimed:
+        return None
+    label = SIGNUP_LABELS.get(row.get("signup_method") or "email", "(register)")
+    points = _award_welcome_points(user_id, label, _sydney_date(row.get("created_at")))
+    inviter = None
+    if row.get("referred_by"):
+        found = supabase_admin.table("users").select("full_name").eq("id", row["referred_by"]).execute().data or []
+        inviter = found[0] if found else None
     inviter_name = ((inviter or {}).get("full_name") or "").strip() or None
-    if email:
-        EmailService.send_welcome_email(email, full_name, referral_code, points, inviter_name)
-    EmailService.send_staff_new_member(full_name, email, mobile, points, inviter_name, label)
+    if row.get("email"):
+        EmailService.send_welcome_email(row["email"], row.get("full_name"), row.get("referral_code"), points, inviter_name)
+    EmailService.send_staff_new_member(row.get("full_name"), row.get("email"), row.get("mobile"), points, inviter_name, label)
+    return points
+
+
+def _email_subject(email: str) -> str:
+    return f"email:{(email or '').strip().lower()}"
+
+
+def _send_email_code(email: str, full_name: str) -> bool:
+    return EmailService.send_verification_code(email, full_name, issue_code(_email_subject(email)))
+
+
+def _email_code_matches(email: str, code: str) -> bool:
+    return code_matches(_email_subject(email), code, windows=3)  # 10-15 minutes: emails can be slow
+
+
+def _verification_status(row: dict) -> dict:
+    """What the app shows on the "Verify your account" card."""
+    pending = None
+    if not row.get("welcomed_at"):
+        pending = _welcome_points_for(_sydney_date(row.get("created_at")))[0]
+    return {
+        "mobile_verified": bool(row.get("mobile_verified_at")),
+        "email_verified": bool(row.get("email_verified_at")),
+        "verified": bool(row.get("mobile_verified_at") and row.get("email_verified_at")),
+        "pending_welcome_points": pending,
+    }
 
 def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
     """Make sure a signed-in Supabase account has its public.users member profile.
@@ -121,7 +186,7 @@ def _ensure_profile(user_id: str, email: str, full_name: str = "") -> str:
         "referral_code": generate_referral_code(),
         "profile_complete": False,
     }).execute()
-    _award_welcome_points(user_id, "(profile repair)")
+    # Welcome points follow once they verify their mobile and email in the app.
     return user_id
 
 
@@ -143,10 +208,12 @@ def _sign_in_social_member(email: str, full_name: str, provider: str, referral_c
             "full_name": (full_name or email.split("@")[0]).strip(),
             "referral_code": code,
             "profile_complete": False,
+            "signup_method": provider,
+            "email_verified_at": _now_iso(),  # Google / Facebook confirmed the address
         }).execute()
-        _welcome_new_member(user_id, email, full_name, code, f"({provider})", referral_code)
         if referral_code:
             link_new_member(user_id, referral_code, full_name, email=email)
+        # Welcome points follow once they add and verify a mobile number in the app.
     token = issue_app_token(user_id, email)
     return {"access_token": token, "refresh_token": token, "token_type": "bearer"}
 
@@ -193,9 +260,10 @@ def social_login(creds: SocialLoginRequest):
                     "email": user.email,
                     "full_name": full_name,
                     "referral_code": ref_code,
-                    "profile_complete": False
+                    "profile_complete": False,
+                    "signup_method": creds.provider,
+                    "email_verified_at": _now_iso() if user.email else None,
                 }).execute()
-                _welcome_new_member(user.id, user.email, full_name, ref_code, f"({creds.provider})", creds.referral_code)
                 if creds.referral_code:
                     link_new_member(user.id, creds.referral_code, full_name, email=user.email)
 
@@ -230,9 +298,11 @@ def social_login(creds: SocialLoginRequest):
                     "email": apple_email,
                     "full_name": "Apple User",
                     "referral_code": ref_code,
-                    "profile_complete": False
+                    "profile_complete": False,
+                    "signup_method": "apple",
+                    # Apple confirmed a real address; a made-up placeholder must be replaced and verified.
+                    "email_verified_at": _now_iso() if claims.get("email") else None,
                 }).execute()
-                _welcome_new_member(user_id, claims.get("email"), "", ref_code, "(apple)", creds.referral_code)
                 if creds.referral_code:
                     link_new_member(user_id, creds.referral_code, "Apple User", email=apple_email)
 
@@ -355,11 +425,12 @@ def register(request: Request, creds: RegisterCredentials):
         user_data = {
             "id": user.id, # Link directly to the Auth UUID
             "full_name": creds.full_name,
-            "email": creds.email,
+            "email": creds.email.strip().lower(),
             "mobile": creds.mobile,
             "referral_code": unique_ref_code,
             "total_points": 0,
-            "bonus_points_granted": False
+            "bonus_points_granted": False,
+            "signup_method": "email",
         }
 
         # Insert user via admin to bypass constraints if needed on registration.
@@ -377,15 +448,13 @@ def register(request: Request, creds: RegisterCredentials):
         # 3. Link to the member whose code (or invite link) they joined with
         if creds.referral_code:
             link_new_member(user.id, creds.referral_code, creds.full_name, email=creds.email, mobile=creds.mobile)
-        # 5. Send verification OTP via Guni SMS
+        # 4. Verification codes by SMS (Guni) and email. Welcome points and the welcome email
+        #    follow once both are entered (/verify-signup).
         try:
             SmsService.send_otp(creds.mobile)
         except Exception as otp_err:
             print(f"SMS OTP trigger skipped/error: {otp_err}")
-
-        # 6. Welcome points (amount set on the admin Program settings page) and welcome email
-        _welcome_new_member(user.id, creds.email, creds.full_name, unique_ref_code, "(register)", creds.referral_code,
-                            mobile=creds.mobile)
+        _send_email_code(creds.email, creds.full_name)
 
         return TokenResponse(access_token="pending_verification")
 
@@ -427,6 +496,9 @@ def verify_mobile(request: Request, req: VerifyMobileRequest):
         if not user_row:
              raise HTTPException(status_code=404, detail="No account found for this mobile number")
 
+        if not user_row.get("mobile_verified_at"):
+            supabase_admin.table("users").update({"mobile_verified_at": _now_iso()}).eq("id", user_row["id"]).execute()
+        _finish_signup_if_verified(user_row["id"])
         token = issue_app_token(user_row["id"], user_row.get("email"))
         return {"success": True, "message": "Mobile number verified", "access_token": token}
 
@@ -434,6 +506,131 @@ def verify_mobile(request: Request, req: VerifyMobileRequest):
          raise e
     except Exception as e:
          raise HTTPException(status_code=400, detail=str(e))
+
+
+def _member_by_email(email: str):
+    email = (email or "").strip()
+    if not email:
+        return None
+    rows = supabase_admin.table("users").select("*").in_("email", list({email, email.lower()})).execute().data or []
+    return next((u for u in rows if not u.get("deleted_at")), None)
+
+
+def _send_code(row: dict, channel: str) -> None:
+    """Send a new SMS or email code to the member's own mobile / email on file."""
+    if channel == "sms":
+        if not row.get("mobile"):
+            raise HTTPException(status_code=400, detail="Please add your mobile number first.")
+        try:
+            SmsService.send_otp(row["mobile"])
+        except Exception as e:
+            print(f"Send SMS code error: {e}")
+            raise HTTPException(status_code=400, detail="We couldn't send a text message right now. Please try again shortly.")
+    elif channel == "email":
+        if not row.get("email") or not _send_email_code(row["email"], row.get("full_name")):
+            raise HTTPException(status_code=400, detail="We couldn't send the email right now. Please try again shortly.")
+    else:
+        raise HTTPException(status_code=400, detail="channel must be sms or email")
+
+
+def _check_codes(row: dict, mobile_code: Optional[str], email_code: Optional[str]) -> None:
+    """Mark whichever of mobile / email the codes confirm; 400 if anything is still unverified."""
+    updates, wrong = {}, []
+    if not row.get("mobile_verified_at"):
+        if row.get("mobile") and mobile_code and SmsService.verify_otp(row["mobile"], mobile_code):
+            updates["mobile_verified_at"] = _now_iso()
+        else:
+            wrong.append("mobile")
+    if not row.get("email_verified_at"):
+        if row.get("email") and email_code and _email_code_matches(row["email"], email_code):
+            updates["email_verified_at"] = _now_iso()
+        else:
+            wrong.append("email")
+    if updates:
+        supabase_admin.table("users").update(updates).eq("id", row["id"]).execute()
+        row.update(updates)
+    if wrong:
+        which = " and ".join({"mobile": "mobile", "email": "email"}[w] for w in wrong)
+        raise HTTPException(status_code=400, detail=f"The {which} code is incorrect or has expired. Please check it or tap Resend.")
+
+
+class SendCodeRequest(BaseModel):
+    channel: str                  # "sms" or "email"
+    email: Optional[str] = None   # sign-up screen (not signed in yet)
+
+
+@router.post("/send-code")
+@limiter.limit("5/minute")
+def send_code(request: Request, req: SendCodeRequest):
+    """Resend a sign-up code. The reply is the same for unknown addresses."""
+    row = _member_by_email(req.email)
+    if row and not row.get("mobile_verified_at" if req.channel == "sms" else "email_verified_at"):
+        _send_code(row, req.channel)
+    return {"success": True}
+
+
+class VerifySignupRequest(BaseModel):
+    email: str
+    mobile_code: Optional[str] = None
+    email_code: Optional[str] = None
+
+
+@router.post("/verify-signup")
+@limiter.limit("10/minute")
+def verify_signup(request: Request, req: VerifySignupRequest):
+    """Both codes from the sign-up screen. When mobile and email are both verified the member
+    gets their welcome points and is signed in."""
+    row = _member_by_email(req.email)
+    if not row:
+        raise HTTPException(status_code=404, detail="No account found for this email address")
+    _check_codes(row, req.mobile_code, req.email_code)
+    points = _finish_signup_if_verified(row["id"])
+    return {"success": True, "access_token": issue_app_token(row["id"], row.get("email")), "points_added": points or 0}
+
+
+@router.get("/verification")
+def get_verification(current_user: dict = Depends(get_current_user)):
+    rows = supabase_admin.table("users").select("*").eq("id", current_user.get("sub")).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {**_verification_status(rows[0]), "mobile": rows[0].get("mobile"), "email": rows[0].get("email")}
+
+
+class MyCodeRequest(BaseModel):
+    channel: str
+    code: Optional[str] = None
+
+
+@router.post("/verification/send")
+@limiter.limit("5/minute")
+def send_my_code(request: Request, req: MyCodeRequest, current_user: dict = Depends(get_current_user)):
+    """For members who skipped a code at sign-up (or changed their mobile): send a new one."""
+    rows = supabase_admin.table("users").select("*").eq("id", current_user.get("sub")).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    _send_code(rows[0], req.channel)
+    return {"success": True}
+
+
+@router.post("/verification/check")
+@limiter.limit("10/minute")
+def check_my_code(request: Request, req: MyCodeRequest, current_user: dict = Depends(get_current_user)):
+    rows = supabase_admin.table("users").select("*").eq("id", current_user.get("sub")).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    row = rows[0]
+    if req.channel not in ("sms", "email"):
+        raise HTTPException(status_code=400, detail="channel must be sms or email")
+    try:
+        _check_codes(row, req.code if req.channel == "sms" else None, req.code if req.channel == "email" else None)
+    except HTTPException:
+        # Only the channel being checked matters here; the other may simply not be done yet.
+        done = row.get("mobile_verified_at" if req.channel == "sms" else "email_verified_at")
+        if not done:
+            raise HTTPException(status_code=400, detail="That code is incorrect or has expired. Please check it or tap Resend.")
+    points = _finish_signup_if_verified(row["id"])
+    fresh = supabase_admin.table("users").select("*").eq("id", row["id"]).execute().data[0]
+    return {**_verification_status(fresh), "points_added": points or 0}
 
 @router.post("/login", response_model=TokenResponse)
 def login(request: Request, creds: LoginCredentials):
@@ -521,6 +718,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Tier status warning: {e}")
         me["tier"] = None
+    me["verification"] = _verification_status(me)
     return me
 
 @router.put("/profile")
@@ -538,6 +736,9 @@ def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current
          before = (supabase_admin.table("users").select("full_name, email, mobile").eq("id", user_id).execute().data or [{}])[0]
          # Automatically mark profile as completed when profile details are saved
          update_data["profile_complete"] = True
+         # A new mobile number has to be verified again (the email can't be changed here).
+         if "mobile" in update_data and format_mobile(update_data["mobile"]) != format_mobile(before.get("mobile") or ""):
+             update_data["mobile_verified_at"] = None
          resp = supabase_admin.table("users").update(update_data).eq("id", user_id).execute()
          # "Your details were updated — if this wasn't you, contact us" when contact details change
          changes = [(label, update_data[key]) for key, label in (("mobile", "Mobile number"), ("email", "Email address"))

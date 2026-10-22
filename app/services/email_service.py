@@ -309,6 +309,18 @@ class EmailService:
 
     # 2. Forgot password
     @staticmethod
+    def send_verification_code(to_email: str, full_name: str, code: str) -> bool:
+        """The 6-digit code that confirms a member's email address."""
+        body = f"""
+        <p>Hi {_esc(_first(full_name))},</p>
+        <p>Enter this code in the {_esc(settings.FROM_NAME)} app to confirm your email address:</p>
+        <p style="margin:22px 0;font-size:32px;font-weight:bold;letter-spacing:8px;color:#111">{_esc(code)}</p>
+        <p>The code expires in 10 minutes. Your bonus points are added once your email and mobile are both confirmed.</p>
+        <p style="color:#777;font-size:13px">If you didn't sign up, you can ignore this email.</p>
+        """
+        return _deliver(to_email, f"Your verification code: {code}", _layout("Confirm your email", body))
+
+    @staticmethod
     def send_password_reset(to_email: str, full_name: str, reset_link: str) -> bool:
         body = f"""
         <p>Hi {_esc(_first(full_name))},</p>

@@ -36,6 +36,18 @@ def _otp_for_window(mobile: str, window: int) -> str:
     return str(int.from_bytes(digest[:8], "big") % (10 ** OTP_DIGITS)).zfill(OTP_DIGITS)
 
 
+def issue_code(subject: str) -> str:
+    """The current 6-digit code for a subject: a formatted mobile, or "email:<address>"."""
+    return _otp_for_window(subject, int(time.time()) // OTP_WINDOW_SECONDS)
+
+
+def code_matches(subject: str, code: str, windows: int = 2) -> bool:
+    """True if code was issued for subject in the current window or the (windows - 1) before it."""
+    code = (code or "").strip()
+    current = int(time.time()) // OTP_WINDOW_SECONDS
+    return any(hmac.compare_digest(_otp_for_window(subject, current - i), code) for i in range(windows))
+
+
 class SmsService:
 
     @staticmethod
@@ -63,7 +75,7 @@ class SmsService:
     @staticmethod
     def send_otp(mobile: str):
         mobile = format_mobile(mobile)
-        code = _otp_for_window(mobile, int(time.time()) // OTP_WINDOW_SECONDS)
+        code = issue_code(mobile)
         return SmsService.send_sms(
             mobile,
             f"Your Reliiance verification code is {code}. It expires in 5 minutes. Do not share this code.",
@@ -71,10 +83,4 @@ class SmsService:
 
     @staticmethod
     def verify_otp(mobile: str, code: str) -> bool:
-        mobile = format_mobile(mobile)
-        code = code.strip()
-        current = int(time.time()) // OTP_WINDOW_SECONDS
-        return any(
-            hmac.compare_digest(_otp_for_window(mobile, w), code)
-            for w in (current, current - 1)
-        )
+        return code_matches(format_mobile(mobile), code)

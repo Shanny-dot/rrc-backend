@@ -280,7 +280,7 @@ def test_errors_are_readable_by_the_admin_site(env):
 
 def test_login_repairs_missing_profile(env):
     """An account that exists in Supabase Auth but has no member profile can log in,
-    gets a profile with the welcome bonus, and every screen works."""
+    gets a profile, and every screen works; the welcome bonus follows once verified."""
     db, c = env["db"], env["c"]
     orphan_id = "00000000-0000-4000-8000-0000000000d4"
     db.auth.accounts["varun@example.com"] = ("Secret123!", orphan_id, "Varun")
@@ -289,7 +289,12 @@ def test_login_repairs_missing_profile(env):
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     me = c.get("/api/v1/auth/me", headers=h)
     assert me.status_code == 200, me.text
-    assert me.json()["email"] == "varun@example.com" and me.json()["total_points"] == 100
+    assert me.json()["email"] == "varun@example.com" and me.json()["total_points"] == 0
+    assert me.json()["verification"] == {"mobile_verified": False, "email_verified": False, "verified": False,
+                                         "pending_welcome_points": 100}
+    user(db, orphan_id)["mobile"] = "+61412000444"
+    _verify_in_app(c, h, "+61412000444", "varun@example.com")
+    assert c.get("/api/v1/auth/me", headers=h).json()["total_points"] == 100
     # Logging in again doesn't create a second profile or a second bonus.
     c.post("/api/v1/auth/login", json={"email": "varun@example.com", "password": "Secret123!"})
     assert len([u for u in db.tables["users"] if u["email"] == "varun@example.com"]) == 1
@@ -305,6 +310,28 @@ def test_forgot_password_link_opens_reset_page(env):
 
 
 # ── Mobile OTP (Guni SMS) ─────────────────────────────────────────────────
+def _codes(mobile, email):
+    """The SMS and email codes a member would receive right now."""
+    from app.services.sms_service import issue_code, format_mobile
+    return issue_code(format_mobile(mobile)), issue_code(f"email:{email.lower()}")
+
+
+def _verify_signup(c, mobile, email):
+    sms, mail = _codes(mobile, email)
+    r = c.post("/api/v1/auth/verify-signup", json={"email": email, "mobile_code": sms, "email_code": mail})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _verify_in_app(c, h, mobile, email):
+    """A signed-in member who skipped the codes at sign-up verifies from the app."""
+    sms, mail = _codes(mobile, email)
+    assert c.post("/api/v1/auth/verification/check", headers=h, json={"channel": "sms", "code": sms}).status_code == 200
+    r = c.post("/api/v1/auth/verification/check", headers=h, json={"channel": "email", "code": mail})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def _capture_guni(monkeypatch):
     """Stub the Guni gateway; return the list of JSON payloads it was sent."""
     import httpx
@@ -658,7 +685,10 @@ def test_welcome_points_follow_the_setting(env):
     _setting(db, "welcome_points", "250")
     db.auth.accounts["newbie@example.com"] = ("Secret123!", "00000000-0000-4000-8000-0000000000f6", "New Bee")
     tok = c.post("/api/v1/auth/login", json={"email": "newbie@example.com", "password": "Secret123!"}).json()["access_token"]
-    assert c.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"}).json()["total_points"] == 250
+    h = {"Authorization": f"Bearer {tok}"}
+    user(db, "00000000-0000-4000-8000-0000000000f6")["mobile"] = "+61412000555"
+    _verify_in_app(c, h, "+61412000555", "newbie@example.com")
+    assert c.get("/api/v1/auth/me", headers=h).json()["total_points"] == 250
     _setting(db, "welcome_points", "100")
 
 
@@ -885,24 +915,35 @@ def test_launch_day_bonus(env, monkeypatch):
     _setting(db, "welcome_points", "50")
     _setting(db, "launch_bonus_points", "100")
 
+    from app.api.routes.auth import limiter
+    limiter.reset()  # earlier tests used up the 5-sign-ups-a-minute limit
+
+    def signup(name, email, mobile, **extra):
+        c.post("/api/v1/auth/register", json={"full_name": name, "email": email, "password": "Secret123!",
+                                              "mobile": mobile, **extra})
+        _verify_signup(c, mobile, email)
+        return next(u for u in db.tables["users"] if u["email"] == email)
+
     _setting(db, "launch_date", today.isoformat())
-    c.post("/api/v1/auth/register", json={"full_name": "Quinn Ray", "email": "quinn@example.com", "password": "Secret123!",
-                                          "mobile": "+61411000777"})
-    quinn = next(u for u in db.tables["users"] if u["email"] == "quinn@example.com")
+    quinn = signup("Quinn Ray", "quinn@example.com", "+61411000777")
     assert quinn["total_points"] == 100
     assert any(t["description"] == "Launch day bonus" for t in tx(db, quinn["id"]))
 
     _setting(db, "launch_date", (today - datetime.timedelta(days=1)).isoformat())
-    c.post("/api/v1/auth/register", json={"full_name": "Una Ng", "email": "una@example.com", "password": "Secret123!",
-                                          "mobile": "+61411000778", "referral_code": "LAUNCH"})
-    assert next(u for u in db.tables["users"] if u["email"] == "una@example.com")["total_points"] == 50
+    assert signup("Una Ng", "una@example.com", "+61411000778", referral_code="LAUNCH")["total_points"] == 50
 
     _setting(db, "welcome_points", "0")   # welcome points switched off
-    c.post("/api/v1/auth/register", json={"full_name": "Vic Oh", "email": "vic@example.com", "password": "Secret123!",
-                                          "mobile": "+61411000779"})
-    vic = next(u for u in db.tables["users"] if u["email"] == "vic@example.com")
+    vic = signup("Vic Oh", "vic@example.com", "+61411000779")
     assert vic["total_points"] == 0 and not tx(db, vic["id"])
     _setting(db, "welcome_points", "100")
+
+    # Signed up on launch day but only verified the day after: still the launch bonus.
+    c.post("/api/v1/auth/register", json={"full_name": "Late Lee", "email": "late@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000770"})
+    late = next(u for u in db.tables["users"] if u["email"] == "late@example.com")
+    late["created_at"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()
+    _verify_signup(c, "+61411000770", "late@example.com")
+    assert late["total_points"] == 100
 
     # The launch QR page still records the code so the app fills it in.
     phone = {"CF-Connecting-IP": "203.0.113.77"}
@@ -921,6 +962,8 @@ def test_staff_emails_and_bell_updates(env, monkeypatch):
     c, db, h = env["c"], env["db"], env["member"]
     c.post("/api/v1/auth/register", json={"full_name": "Wes Lo", "email": "wes@example.com", "password": "Secret123!",
                                           "mobile": "+61411000780"})
+    assert not [e for e in emails if e["to"] == "admin@rrc.com"]   # not until they've verified
+    _verify_signup(c, "+61411000780", "wes@example.com")
     staff = next(e for e in emails if e["to"] == "admin@rrc.com")
     assert staff["subject"] == "New member: Wes Lo" and "wes@example.com" in staff["html"] and "+61411000780" in staff["html"]
 
@@ -934,3 +977,83 @@ def test_staff_emails_and_bell_updates(env, monkeypatch):
     c.put(f"/api/v1/admin/redemptions/{red}/status", headers=env["admin"], json={"status": "sent"})  # Mark as sent from Pending
     titles = [n["title"] for n in c.get("/api/v1/notifications", headers=h).json()]
     assert "Toy World Card has been sent" in titles
+
+
+def test_points_only_after_mobile_and_email_verified(env, monkeypatch):
+    """Sign-up sends an SMS code and an email code; points, the welcome email and the staff
+    email only follow once both are verified, and only once."""
+    import app.services.email_service as es
+    from app.api.routes.auth import limiter
+    limiter.reset()
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    sent_sms = _capture_guni(monkeypatch)
+    c, db = env["c"], env["db"]
+    _setting(db, "launch_date", "2000-01-01")
+    _setting(db, "welcome_points", "50")
+
+    r = c.post("/api/v1/auth/register", json={"full_name": "Xavi Po", "email": "Xavi@Example.com", "password": "Secret123!",
+                                              "mobile": "+61411000790"})
+    assert r.status_code == 200, r.text
+    xavi = next(u for u in db.tables["users"] if u["email"] == "xavi@example.com")
+    sms, mail = _codes("+61411000790", "xavi@example.com")
+    assert sms in sent_sms[-1]["message"]
+    code_email = next(e for e in emails if e["to"] == "Xavi@Example.com")
+    assert mail in code_email["subject"] and mail in code_email["html"]
+    assert xavi["total_points"] == 0 and not xavi.get("welcomed_at")
+
+    # Skipping the codes, the member can still sign in, but gets no points.
+    db.auth.accounts["xavi@example.com"] = ("Secret123!", xavi["id"], "Xavi Po")
+    tok = c.post("/api/v1/auth/login", json={"email": "xavi@example.com", "password": "Secret123!"}).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    assert c.get("/api/v1/auth/verification", headers=h).json()["pending_welcome_points"] == 50
+
+    # Right SMS code, wrong email code: the mobile counts, nothing else happens yet.
+    wrong = str((int(mail) + 1) % 1000000).zfill(6)
+    r = c.post("/api/v1/auth/verify-signup", json={"email": "xavi@example.com", "mobile_code": sms, "email_code": wrong})
+    assert r.status_code == 400 and "email code" in r.json()["detail"] and "mobile" not in r.json()["detail"]
+    assert xavi["mobile_verified_at"] and not xavi.get("email_verified_at") and xavi["total_points"] == 0
+
+    # Resend the email code, then verify: points, welcome email and staff email, once.
+    assert c.post("/api/v1/auth/send-code", json={"channel": "email", "email": "xavi@example.com"}).status_code == 200
+    assert c.post("/api/v1/auth/send-code", json={"channel": "email", "email": "nobody@example.com"}).status_code == 200
+    r = c.post("/api/v1/auth/verify-signup", json={"email": "xavi@example.com", "email_code": mail})
+    assert r.status_code == 200 and r.json()["points_added"] == 50 and r.json()["access_token"]
+    assert xavi["total_points"] == 50
+    assert any(e["to"] == "xavi@example.com" and e["subject"].startswith("Welcome") for e in emails)
+    assert [e for e in emails if e["to"] == "admin@rrc.com" and "Xavi Po" in e["subject"]]
+    c.post("/api/v1/auth/verify-signup", json={"email": "xavi@example.com", "email_code": mail})
+    c.post("/api/v1/auth/verify-mobile", json={"mobile": "+61411000790", "code": sms})
+    assert xavi["total_points"] == 50 and len([t for t in tx(db, xavi["id"]) if t["type"] == "signup_bonus"]) == 1
+    assert c.get("/api/v1/auth/me", headers=h).json()["verification"]["verified"] is True
+
+    # A new mobile number must be verified again (no extra points).
+    c.put("/api/v1/auth/profile", headers=h, json={"mobile": "+61411000791"})
+    assert c.get("/api/v1/auth/verification", headers=h).json()["mobile_verified"] is False
+    c.put("/api/v1/auth/profile", headers=h, json={"mobile": "+61411000791"})
+    _verify_in_app(c, h, "+61411000791", "xavi@example.com")
+    assert xavi["total_points"] == 50
+    _setting(db, "welcome_points", "100")
+
+
+def test_social_signup_needs_a_verified_mobile(env, monkeypatch):
+    """Google confirms the email; the member still adds and verifies a mobile for their points."""
+    import app.api.routes.auth as auth
+    monkeypatch.setattr(auth, "google_enabled", lambda: True)
+    monkeypatch.setattr(auth, "verify_google_id_token", lambda t: {"email": "gina@example.com", "name": "Gina Ho"})
+    _capture_guni(monkeypatch)
+    c, db = env["c"], env["db"]
+    _setting(db, "launch_date", "2000-01-01")
+    _setting(db, "welcome_points", "100")
+    r = c.post("/api/v1/auth/social-login", json={"provider": "google", "id_token": "x"})
+    assert r.status_code == 200, r.text
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    v = c.get("/api/v1/auth/verification", headers=h).json()
+    assert v["email_verified"] is True and v["mobile_verified"] is False and v["pending_welcome_points"] == 100
+    assert c.post("/api/v1/auth/verification/send", headers=h, json={"channel": "sms"}).status_code == 400  # no mobile yet
+    c.put("/api/v1/auth/profile", headers=h, json={"mobile": "0411 000 792"})
+    assert c.post("/api/v1/auth/verification/send", headers=h, json={"channel": "sms"}).status_code == 200
+    sms, _ = _codes("0411000792", "gina@example.com")
+    r = c.post("/api/v1/auth/verification/check", headers=h, json={"channel": "sms", "code": sms})
+    assert r.status_code == 200 and r.json()["points_added"] == 100 and r.json()["verified"] is True
