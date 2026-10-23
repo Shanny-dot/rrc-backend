@@ -33,6 +33,7 @@ def _html_to_text(html_content: str) -> str:
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = re.sub(r"(?i)</(p|div|h\d|li|tr)>", "\n", text)
     text = re.sub(r"(?i)<li\b[^>]*>", "- ", text)
+    text = re.sub(r"(?is)<a\b[^>]*href=\"mailto:[^\"]*\"[^>]*>(.*?)</a>", r"\1", text)
     text = re.sub(r"(?is)<a\b[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", r"\2 (\1)", text)
     text = html.unescape(re.sub(r"<[^>]+>", "", text))
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
