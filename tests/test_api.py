@@ -254,6 +254,21 @@ def test_profile_update_with_new_options(env):
     assert user(env["db"], MEMBER_ID)["full_name"] == "Manoj Kumar"
 
 
+def test_date_of_birth_is_locked_once_saved(env):
+    """Members can't change their date of birth after saving it (birthday bonus); the app
+    re-sending the same date with other changes still saves; staff can correct it."""
+    c, h, db = env["c"], env["member"], env["db"]
+    member = user(db, MEMBER_ID)
+    member["dob"] = "1986-03-14"
+    r = c.put("/api/v1/auth/profile", headers=h, json={"dob": "1990-01-01", "city": "Perth"})
+    assert r.status_code == 400 and "can't be changed" in r.json()["detail"]
+    assert member["dob"] == "1986-03-14" and member.get("city") != "Perth"
+    assert c.put("/api/v1/auth/profile", headers=h, json={"dob": "1986-03-14", "city": "Perth"}).status_code == 200
+    assert member["city"] == "Perth" and member["dob"] == "1986-03-14"
+    assert c.put(f"/api/v1/admin/users/{MEMBER_ID}", headers=env["admin"], json={"dob": "1987-03-14"}).status_code == 200
+    assert member["dob"] == "1987-03-14"
+
+
 def test_admin_delete_blocks_member(env):
     c = env["c"]
     assert c.get("/api/v1/auth/me", headers=env["old"]).status_code == 200

@@ -760,7 +760,15 @@ def update_profile(profile: UserUpdate, current_user: dict = Depends(get_current
             update_data.pop(key)  # never blank out the name or mobile by accident
 
     if update_data:
-         before = (supabase_admin.table("users").select("full_name, email, mobile").eq("id", user_id).execute().data or [{}])[0]
+         before = (supabase_admin.table("users").select("full_name, email, mobile, dob").eq("id", user_id).execute().data or [{}])[0]
+         # The date of birth is locked once saved (it drives the birthday bonus); staff can
+         # still correct it on the admin website.
+         if "dob" in update_data and before.get("dob"):
+             if update_data["dob"] and str(update_data["dob"])[:10] != str(before["dob"])[:10]:
+                 raise HTTPException(status_code=400, detail=(
+                     "Your date of birth can't be changed once it's saved. If it's wrong, please contact us at "
+                     "membership@reliiancerewards.com.au."))
+             update_data.pop("dob")
          # Automatically mark profile as completed when profile details are saved
          update_data["profile_complete"] = True
          # A new mobile number has to be verified again (the email can't be changed here).
