@@ -60,7 +60,7 @@ def _welcome_points_for(row: dict) -> tuple:
     members who signed up with the launch QR code get the launch bonus instead of the welcome
     points. Either can be 0 (none)."""
     if is_launch_code(row.get("signup_code") or ""):
-        return get_int_setting("launch_bonus_points"), "Launch bonus"
+        return get_int_setting("launch_bonus_points"), "Welcome Bonus"
     return get_int_setting("welcome_points"), "Welcome Bonus"
 
 

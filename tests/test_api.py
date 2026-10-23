@@ -925,7 +925,7 @@ def test_launch_bonus_only_for_the_qr_code(env, monkeypatch):
     assert quinn["total_points"] == 0   # nothing until the account is set up
     _verify_signup(c, "+61411000777", "quinn@example.com")
     assert quinn["total_points"] == 100
-    assert any(t["description"] == "Launch bonus" for t in tx(db, quinn["id"]))
+    assert any(t["description"] == "Welcome Bonus" for t in tx(db, quinn["id"]))
 
     una = register("Una Ng", "una@example.com", "+61411000778")   # no QR code: welcome points
     _verify_signup(c, "+61411000778", "una@example.com")
