@@ -306,7 +306,7 @@ def test_forgot_password_link_opens_reset_page(env):
     assert r.status_code == 200 and r.json()["success"]
     email, opts = env["db"].auth.reset_requests[-1]
     assert email == "manoj@example.com"
-    assert opts["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
+    assert opts["redirect_to"] == "https://admin.reliiancerewards.com.au/reset-password"
 
 
 # ── Mobile OTP (Guni SMS) ─────────────────────────────────────────────────
@@ -767,7 +767,7 @@ def test_forgot_password_sends_our_own_email(env, monkeypatch):
     monkeypatch.setattr(db.auth.admin, "generate_link", lambda attrs: calls.append(attrs) or _Link(), raising=False)
     r = env["c"].post("/api/v1/auth/forgot-password", json={"email": "Manoj@Example.com"})
     assert r.status_code == 200 and r.json()["success"]
-    assert calls[-1]["options"]["redirect_to"] == "https://rrc-admin.vercel.app/reset-password"
+    assert calls[-1]["options"]["redirect_to"] == "https://admin.reliiancerewards.com.au/reset-password"
     assert emails[-1]["to"] == "manoj@example.com" and "verify?token=abc" in emails[-1]["html"]
 
 
@@ -1046,3 +1046,28 @@ def test_social_signup_needs_a_verified_mobile(env, monkeypatch):
     sms, _ = _codes("0411000792", "gina@example.com")
     r = c.post("/api/v1/auth/verification/check", headers=h, json={"channel": "sms", "code": sms})
     assert r.status_code == 200 and r.json()["points_added"] == 100 and r.json()["verified"] is True
+
+
+def test_signup_with_an_email_that_already_has_a_login(env):
+    """A member gets a clear 'sign in instead'; a leftover login with no member profile is replaced."""
+    from app.api.routes.auth import limiter
+    limiter.reset()
+    c, db = env["c"], env["db"]
+    body = {"full_name": "Olive Tan", "email": "olive@example.com", "password": "Secret123!", "mobile": "+61411000801"}
+    assert c.post("/api/v1/auth/register", json=body).status_code == 200
+
+    # Signing up again with the same email (any case) points them to Sign in.
+    r = c.post("/api/v1/auth/register", json={**body, "email": "Olive@Example.com"})
+    assert r.status_code == 400 and "sign in" in r.json()["detail"].lower()
+
+    # A login left behind without a member profile (older app version) no longer blocks sign-up.
+    db.auth.accounts["leftover@example.com"] = ("old", "orphan-login-id", "")
+    r = c.post("/api/v1/auth/register", json={**body, "email": "leftover@example.com", "mobile": "+61411000802"})
+    assert r.status_code == 200, r.text
+    member = next(u for u in db.tables["users"] if u["email"] == "leftover@example.com")
+    assert member["id"] != "orphan-login-id" and db.auth.accounts["leftover@example.com"][1] == member["id"]
+
+    # A closed (admin-deleted) account asks them to contact the team.
+    member["deleted_at"] = "2026-10-01T00:00:00+00:00"
+    r = c.post("/api/v1/auth/register", json={**body, "email": "leftover@example.com"})
+    assert r.status_code == 400 and "closed account" in r.json()["detail"]

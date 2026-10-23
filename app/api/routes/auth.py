@@ -371,6 +371,43 @@ def social_login(creds: SocialLoginRequest):
 
     raise HTTPException(status_code=400, detail="Social authentication failed. Please try again.")
 
+ALREADY_MEMBER = ("You already have an account with this email. Please sign in instead, "
+                  "or tap 'Forgot password' if you can't remember your password.")
+
+
+def _email_taken(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "already been registered" in msg or "already exists" in msg or "email_exists" in msg
+
+
+def _reject_existing_member(email: str) -> None:
+    """Stop sign-up when a member profile already uses this email."""
+    email = email.strip()
+    rows = supabase_admin.table("users").select("id, deleted_at").in_("email", list({email, email.lower()})).execute().data or []
+    if any(not r.get("deleted_at") for r in rows):
+        raise HTTPException(status_code=400, detail=ALREADY_MEMBER)
+    if rows:
+        raise HTTPException(status_code=400, detail="This email belongs to a closed account. "
+                            "Please contact membership@reliiancerewards.com.au to reopen it.")
+
+
+def _orphan_login(email: str):
+    """The Supabase login for this email, if it has no member profile."""
+    email = email.strip().lower()
+    page = 1
+    while True:
+        logins = supabase_admin.auth.admin.list_users(page=page, per_page=1000)
+        match = next((u for u in logins if (u.email or "").lower() == email), None)
+        if match or len(logins) < 1000:
+            break
+        page += 1
+    if not match:
+        return None
+    if supabase_admin.table("users").select("id").eq("id", match.id).execute().data:
+        return None
+    return match
+
+
 @router.post("/register", response_model=TokenResponse)
 @limiter.limit("5/minute")
 def register(request: Request, creds: RegisterCredentials):
@@ -380,20 +417,27 @@ def register(request: Request, creds: RegisterCredentials):
 
         # 1. Sign up with Supabase Auth bypassing Rate Limits (Admin API)
         # Bypasses the 3 emails/hour GoTrue limits
+        new_login = {
+            "email": creds.email,
+            "password": creds.password,
+            "email_confirm": True,
+            "user_metadata": {
+                "full_name": creds.full_name,
+            }
+        }
         try:
-            auth_response = supabase_admin.auth.admin.create_user({
-                "email": creds.email,
-                "password": creds.password,
-                "email_confirm": True,
-                "user_metadata": {
-                    "full_name": creds.full_name,
-                }
-            })
-            user = auth_response.user
+            user = supabase_admin.auth.admin.create_user(new_login).user
         except Exception as create_err:
-            if "already exists" in str(create_err).lower():
-                raise HTTPException(status_code=400, detail="An account with this email already exists.")
-            raise create_err
+            if not _email_taken(create_err):
+                raise create_err
+            _reject_existing_member(creds.email)
+            # A login with no member profile (left by an older app version or an
+            # interrupted sign-up) holds the email: remove it and sign up afresh.
+            orphan = _orphan_login(creds.email)
+            if not orphan:
+                raise HTTPException(status_code=400, detail=ALREADY_MEMBER)
+            supabase_admin.auth.admin.delete_user(orphan.id)
+            user = supabase_admin.auth.admin.create_user(new_login).user
 
         if not user:
             raise HTTPException(status_code=400, detail="Signup failed")

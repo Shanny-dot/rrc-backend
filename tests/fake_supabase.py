@@ -182,6 +182,12 @@ class _FakeAuthAdmin:
     def delete_user(self, uid):
         self.auth.accounts = {e: a for e, a in self.auth.accounts.items() if a[1] != uid}
 
+    def list_users(self, page=None, per_page=None):
+        users = [_Obj(id=a[1], email=e) for e, a in self.auth.accounts.items()]
+        size = per_page or 50
+        start = ((page or 1) - 1) * size
+        return users[start:start + size]
+
 
 class FakeSupabase:
     """`columns` mirrors the production schema after migrations 002-005, so writes to a
