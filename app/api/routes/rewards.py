@@ -6,7 +6,7 @@ from app.schemas.reward import RewardInDB
 from app.schemas.redemption import RedemptionInDB
 from app.services.points_service import PointsService
 from app.services.email_service import EmailService
-from app.services.program_service import get_setting
+from app.services.program_service import get_setting, get_int_setting
 from app.services import redemption_service
 
 router = APIRouter()
@@ -87,7 +87,13 @@ def redeem_reward(id: str, current_user: dict = Depends(get_current_user)):
     if not user_resp.data:
         raise HTTPException(status_code=404, detail="User not found")
     user = user_resp.data[0]
-    if (user.get("total_points") or 0) < reward["points_required"]:
+    balance = user.get("total_points") or 0
+    minimum = get_int_setting("min_points_to_redeem")
+    if balance < minimum:
+        raise HTTPException(status_code=400, detail=(
+            f"You need at least {minimum:,} points in your account before you can redeem rewards "
+            f"(you have {balance:,}). Earn more by referring friends and attending events."))
+    if balance < reward["points_required"]:
         raise HTTPException(status_code=400, detail="Insufficient points balance")
 
     # 3. Create the pending redemption first, so the points transaction can reference it

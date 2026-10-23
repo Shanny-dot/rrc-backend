@@ -1071,3 +1071,25 @@ def test_signup_with_an_email_that_already_has_a_login(env):
     member["deleted_at"] = "2026-10-01T00:00:00+00:00"
     r = c.post("/api/v1/auth/register", json={**body, "email": "leftover@example.com"})
     assert r.status_code == 400 and "closed account" in r.json()["detail"]
+
+def test_minimum_balance_before_redeeming(env):
+    """Members need at least min_points_to_redeem (150 by default) before redeeming any reward,
+    however cheap; the admin can change it on Program settings (0 = no minimum)."""
+    c, h, db = env["c"], env["member"], env["db"]
+    toy = "/api/v1/rewards/22222222-0000-4000-8000-000000000003/redeem"   # 50 points
+    member = user(db, MEMBER_ID)
+    saved = member["total_points"]
+    member["total_points"] = 100   # e.g. just the launch Welcome Bonus
+    r = c.post(toy, headers=h)
+    assert r.status_code == 400 and "at least 150 points" in r.json()["detail"]
+    assert member["total_points"] == 100
+
+    _setting(db, "min_points_to_redeem", "80")
+    assert c.post(toy, headers=h).status_code == 200
+    assert member["total_points"] == 50
+
+    _setting(db, "min_points_to_redeem", "0")   # switched off
+    assert c.post(toy, headers=h).status_code == 200
+    assert c.get("/api/v1/content").json()["min_points_to_redeem"] == "0"
+    _setting(db, "min_points_to_redeem", "150")
+    member["total_points"] = saved
