@@ -88,10 +88,13 @@ def redeem_reward(id: str, current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="User not found")
     user = user_resp.data[0]
     balance = user.get("total_points") or 0
+    # The minimum only applies to a member's first reward; rejected requests don't count.
     minimum = get_int_setting("min_points_to_redeem")
-    if balance < minimum:
+    first_reward = minimum > 0 and not supabase_admin.table("redemptions").select("id").eq("user_id", user_id) \
+        .neq("status", "rejected").limit(1).execute().data
+    if first_reward and balance < minimum:
         raise HTTPException(status_code=400, detail=(
-            f"You need at least {minimum:,} points in your account before you can redeem rewards "
+            f"You need at least {minimum:,} points in your account before you can redeem your first reward "
             f"(you have {balance:,}). Earn more by referring friends and attending events."))
     if balance < reward["points_required"]:
         raise HTTPException(status_code=400, detail="Insufficient points balance")

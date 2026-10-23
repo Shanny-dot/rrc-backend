@@ -1,6 +1,5 @@
 import base64
 import html
-import os
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -21,15 +20,23 @@ _EMAIL_ENABLED = _SMTP or bool(settings.ZEPTOMAIL_API_KEY) or bool(settings.RESE
 GOLD = "#FAB95B"
 
 
-# The email banner logo (from "Reliiance Rewards logofor email.pdf"), sent inside every email
-# rather than linked, so it shows even if the website moves or blocks image requests.
-LOGO_CID = "rrclogo"
-_LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "email_logo.png")
-try:
-    with open(_LOGO_PATH, "rb") as _f:
-        _LOGO_B64 = base64.b64encode(_f.read()).decode()
-except OSError:
-    _LOGO_B64 = ""
+# The email banner logo (from "Reliiance Rewards logofor email.pdf"), linked from the admin
+# website. Embedding it made Gmail list it as a "noname" attachment on every email.
+EMAIL_LOGO_URL = "https://admin.reliiancerewards.com.au/logo-email.png"
+CONTACT_EMAIL = "membership@reliiancerewards.com.au"
+
+
+def _html_to_text(html_content: str) -> str:
+    """Plain-text version of an email, which is also what inbox previews show."""
+    import re
+    text = re.sub(r"(?is)<(style|script)\b.*?</\1>", "", html_content)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|h\d|li|tr)>", "\n", text)
+    text = re.sub(r"(?i)<li\b[^>]*>", "- ", text)
+    text = re.sub(r"(?is)<a\b[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", r"\2 (\1)", text)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
 
 
 def _zepto_address(value):
@@ -45,12 +52,13 @@ def _send_smtp(params: dict):
     msg["Subject"] = params["subject"]
     if params.get("reply_to"):
         msg["Reply-To"] = params["reply_to"]
-    msg.set_content("This email needs an email app that can show HTML.")
+    msg.set_content(_html_to_text(params["html"]))
     msg.add_alternative(params["html"], subtype="html")
     for img in params.get("inline_images") or []:
         maintype, subtype = (img.get("mime_type") or "image/png").split("/", 1)
         msg.get_payload()[1].add_related(base64.b64decode(img["content"]), maintype=maintype, subtype=subtype,
-                                         cid=f"<{img['cid']}>")
+                                         cid=f"<{img['cid']}>", disposition="inline",
+                                         filename=img.get("name") or f"{img['cid']}.{subtype}")
     for att in params.get("attachments") or []:
         maintype, subtype = (att.get("mime_type") or "application/octet-stream").split("/", 1)
         msg.add_attachment(base64.b64decode(att["content"]), maintype=maintype, subtype=subtype, filename=att["name"])
@@ -113,15 +121,15 @@ def _layout(heading: str, body_html: str, button: tuple = None) -> str:
     <div style="background:#f4f4f4;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">
       <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden">
         <div style="background:#201D1D;padding:0;color:{GOLD};font-weight:bold;font-size:18px;letter-spacing:1px;text-align:center">
-          <img src="cid:{LOGO_CID}" alt="{_esc(settings.FROM_NAME)}" width="560" style="display:block;width:100%;max-width:560px;height:auto;border:0">
+          <img src="{EMAIL_LOGO_URL}" alt="{_esc(settings.FROM_NAME)}" width="560" style="display:block;width:100%;max-width:560px;height:auto;border:0">
         </div>
         <div style="padding:24px;color:#222;font-size:15px;line-height:1.55">
           <h2 style="margin:0 0 14px;font-size:21px;color:#111">{heading}</h2>
           {body_html}
           {button_html}
-        </div>
-        <div style="padding:14px 24px;color:#999;font-size:12px;border-top:1px solid #eee">
-          This is an automated message from {_esc(settings.FROM_NAME)}. Please don't reply to this email.
+          <p style="margin:24px 0 0">If you have any questions, contact us at
+            <a href="mailto:{CONTACT_EMAIL}" style="color:#111">{CONTACT_EMAIL}</a>.</p>
+          <p style="margin:16px 0 0">Kind regards,<br>The Reliiance Rewards Team</p>
         </div>
       </div>
     </div>"""
@@ -136,8 +144,6 @@ def _deliver(to_email: str, subject: str, html_content: str, reply_to: str = Non
         return False
     if not to_email:
         return False
-    if _LOGO_B64 and f"cid:{LOGO_CID}" in html_content:
-        inline_images = [{"cid": LOGO_CID, "mime_type": "image/png", "content": _LOGO_B64}] + list(inline_images or [])
     try:
         _send({"from": FROM_EMAIL, "to": to_email, "subject": subject, "html": html_content,
                "reply_to": reply_to or None, "inline_images": inline_images, "attachments": attachments})
@@ -386,7 +392,7 @@ class EmailService:
     def send_rsvp_confirmation(to_email: str, full_name: str, event: dict, when: str, qr_png_base64: str = None) -> bool:
         qr_html, images = "", None
         if qr_png_base64:
-            images = [{"cid": "rsvpqr", "mime_type": "image/png", "content": qr_png_base64}]
+            images = [{"cid": "rsvpqr", "name": "rsvp-code.png", "mime_type": "image/png", "content": qr_png_base64}]
             qr_html = ('<p>Show this code at the door, or check in with the <strong>Check in</strong> button on the Events screen:</p>'
                        '<p><img src="cid:rsvpqr" alt="Your RSVP code" width="180" height="180"></p>')
         gcal, ics = _ics(event)

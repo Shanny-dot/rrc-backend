@@ -37,6 +37,13 @@ class Query:
         self.filters.append(lambda r, k=k, v=v: str(r.get(k)) == str(v) if v is not None else r.get(k) is None)
         return self
 
+    def neq(self, k, v):
+        self.filters.append(lambda r, k=k, v=v: str(r.get(k)) != str(v))
+        return self
+
+    def limit(self, n):
+        return self   # callers here only check whether anything matched
+
     def is_(self, k, v):
         assert v == "null", "only is_(column, 'null') is supported"
         self.filters.append(lambda r, k=k: r.get(k) is None)

@@ -56,7 +56,7 @@ SETTING_DEFAULTS = {
     "launch_code": "LAUNCH",
     "launch_bonus_points": "100",
     "launch_date": "2026-10-25",
-    # A member needs at least this balance before redeeming any reward (0 = no minimum).
+    # A member needs at least this balance before redeeming their first reward (0 = no minimum).
     "min_points_to_redeem": "150",
     "contact_card_title": "Contact us",
     "tiers_intro": "",

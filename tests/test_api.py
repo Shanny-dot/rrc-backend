@@ -746,7 +746,9 @@ def test_event_points_range_and_rsvp_emails(env, monkeypatch):
     monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
     assert c.post(f"/api/v1/events/{ev['id']}/rsvp", headers=h).status_code == 200
     assert emails[-1]["subject"] == "You're going: Gala"
-    assert [i["cid"] for i in emails[-1]["inline_images"]] == ["rrclogo", "rsvpqr"]  # logo sent inside every email
+    assert [i["cid"] for i in emails[-1]["inline_images"]] == ["rsvpqr"]  # the logo is linked, not attached
+    assert es.EMAIL_LOGO_URL in emails[-1]["html"]
+    assert "contact us at" in emails[-1]["html"] and "The Reliiance Rewards Team" in emails[-1]["html"]
     assert "Wednesday 1 May 2030, 7 pm" in emails[-1]["html"]  # Sydney time
     assert c.delete(f"/api/v1/events/{ev['id']}/rsvp", headers=h).status_code == 200
     assert emails[-1]["subject"] == "RSVP cancelled: Gala"
@@ -800,7 +802,10 @@ def test_emails_go_through_google_workspace(monkeypatch):
     assert msg["To"] == "amy@example.com" and msg["Subject"] == "You're going: Gala"
     assert "Reliiance Rewards" in msg["From"] and "info@reliiancerewards.com.au" in msg["From"]
     raw = msg.as_string()
-    assert "cid:rsvpqr" in raw and "Content-ID: <rsvpqr>" in raw
+    assert "cid:rsvpqr" in raw and "Content-ID: <rsvpqr>" in raw and 'filename="rsvp-code.png"' in raw
+    # The plain-text part (what inbox previews show) is the email's own words.
+    text = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "needs an email app" not in text and "RSVP confirmed" in text and "Kind regards" in text
 
 def test_final_member_emails(env, monkeypatch):
     """The client's final email list: points added, tier upgrade, details changed, friend joined,
@@ -1073,23 +1078,32 @@ def test_signup_with_an_email_that_already_has_a_login(env):
     assert r.status_code == 400 and "closed account" in r.json()["detail"]
 
 def test_minimum_balance_before_redeeming(env):
-    """Members need at least min_points_to_redeem (150 by default) before redeeming any reward,
-    however cheap; the admin can change it on Program settings (0 = no minimum)."""
+    """Members need at least min_points_to_redeem (150 by default) before their FIRST reward,
+    however cheap; after that they can spend all their points. A rejected request doesn't count
+    as a first reward. The admin can change it on Program settings (0 = no minimum)."""
     c, h, db = env["c"], env["member"], env["db"]
     toy = "/api/v1/rewards/22222222-0000-4000-8000-000000000003/redeem"   # 50 points
     member = user(db, MEMBER_ID)
-    saved = member["total_points"]
+    saved_points, saved_reds = member["total_points"], db.tables["redemptions"]
+    db.tables["redemptions"] = [r for r in saved_reds if r["user_id"] != MEMBER_ID]   # a member with no rewards yet
+    db.tables["redemptions"].append({"id": "rej-1", "user_id": MEMBER_ID, "reward_id": "x", "status": "rejected", "points_used": 50})
     member["total_points"] = 100   # e.g. just the launch Welcome Bonus
     r = c.post(toy, headers=h)
-    assert r.status_code == 400 and "at least 150 points" in r.json()["detail"]
+    assert r.status_code == 400 and "at least 150 points" in r.json()["detail"] and "first reward" in r.json()["detail"]
     assert member["total_points"] == 100
 
-    _setting(db, "min_points_to_redeem", "80")
+    member["total_points"] = 150
+    assert c.post(toy, headers=h).status_code == 200   # first reward
+    assert member["total_points"] == 100
+    assert c.post(toy, headers=h).status_code == 200   # later rewards: no minimum
     assert c.post(toy, headers=h).status_code == 200
-    assert member["total_points"] == 50
+    assert member["total_points"] == 0
+    assert c.post(toy, headers=h).status_code == 400   # but still can't spend more than they have
 
+    db.tables["redemptions"] = [r for r in db.tables["redemptions"] if r["user_id"] != MEMBER_ID]
+    member["total_points"] = 60
     _setting(db, "min_points_to_redeem", "0")   # switched off
     assert c.post(toy, headers=h).status_code == 200
     assert c.get("/api/v1/content").json()["min_points_to_redeem"] == "0"
     _setting(db, "min_points_to_redeem", "150")
-    member["total_points"] = saved
+    member["total_points"], db.tables["redemptions"] = saved_points, saved_reds

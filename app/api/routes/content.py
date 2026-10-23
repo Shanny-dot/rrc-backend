@@ -58,7 +58,7 @@ DEFAULT_LABELS = {
     "book_time_message": "Message at the top of the in-app Book a time form",
     "tiers_intro": "Intro text on the member tiers page",
     "welcome_points": "Welcome points for new members",
-    "min_points_to_redeem": "Minimum balance before redeeming any reward",
+    "min_points_to_redeem": "Minimum balance before redeeming a first reward",
     "contact_name": "Contact: name shown on the broker card",
     "contact_phone": "Contact: phone number",
     "contact_email": "Contact: email address",
