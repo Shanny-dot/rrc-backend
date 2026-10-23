@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     FACEBOOK_APP_SECRET: str = ""
     # Guni SMS App Token used to send mobile OTPs. Empty = SMS off.
     GUNI_SMS_API_KEY: str = ""
-    GUNI_SMS_SENDER: str = "Reliiance"
+    # "Reliiance" isn't a registered sender on the Guni account; the shared number is.
+    GUNI_SMS_SENDER: str = "#SharedNum#"
     # Shared secret the daily GitHub Actions job sends in X-Job-Key. Empty = daily job off.
     JOB_SECRET: str = ""
 
