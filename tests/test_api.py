@@ -357,7 +357,7 @@ def test_mobile_otp_send_and_verify(env, monkeypatch):
     # The app may send the local format; it must reach Guni (and match on verify) as +61.
     r = c.post("/api/v1/auth/resend-otp", json={"mobile": "0412 000 111"})
     assert r.status_code == 200, r.text
-    assert sent[-1]["contacts"] == ["61412000111"] and sent[-1]["sender"] == "Reliiance"
+    assert sent[-1]["contacts"] == ["61412000111"] and sent[-1]["sender"] == "#SharedNum#"
     code = sent[-1]["message"].split("code is ")[1][:6]
     assert code.isdigit()
 
