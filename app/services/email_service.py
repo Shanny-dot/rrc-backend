@@ -490,6 +490,29 @@ class EmailService:
                         _layout("New member signed up", body), reply_to=email or None)
 
     @staticmethod
+    def send_daily_report(summary: dict, xlsx: bytes, filename: str, to_email: str = None) -> bool:
+        """End-of-day report to staff: the day's numbers in the email, full detail in the Excel file."""
+        to_email = to_email or settings.ADMIN_EMAIL
+        if not to_email:
+            return False
+        s = summary
+        statuses = "".join(f"<li>{_esc(k)}: <strong>{v}</strong></li>" for k, v in sorted(s.get("statuses", {}).items()))
+        body = f"""
+        <p>Here is today's report for {_esc(settings.FROM_NAME)}. The attached Excel file has every detail:
+        today's new members, points, reward requests and referrals, and every member's points and status.</p>
+        {_box([("Joined today", f"{s['joined_today']} ({s['joined_today_verified']} fully verified)"),
+               ("Points added today", f"{s['points_added_today']:,}"), ("Points used today", f"{s['points_used_today']:,}"),
+               ("Reward requests today", s["redemptions_today"]),
+               ("Reward requests still open", s["redemptions_open"]), ("Referrals made today", s["referrals_today"]),
+               ("Members in total", f"{s['members_total']} ({s['members_verified']} fully verified)")])}
+        <p><strong>Members by status</strong></p><ul style="padding-left:20px;margin:0 0 12px">{statuses}</ul>
+        """
+        att = {"name": filename, "content": base64.b64encode(xlsx).decode(),
+               "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+        return _deliver(to_email, f"Daily report — {s['date']}", _layout(f"Daily report: {_esc(s['date'])}", body),
+                        attachments=[att])
+
+    @staticmethod
     def send_staff_feedback(to_email: str, member: dict, feedback: dict):
         name = html.escape(member.get("full_name") or "A member")
         contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))

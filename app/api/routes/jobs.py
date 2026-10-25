@@ -167,6 +167,20 @@ def points_expiry(today: datetime.date, members: list) -> dict:
     return out
 
 
+@router.post("/daily-report")
+def run_daily_report(x_job_key: str = Header(default=""), date: str = None):
+    """End-of-day staff report (Excel by email). ?date=YYYY-MM-DD for another Sydney day."""
+    if not settings.JOB_SECRET or x_job_key != settings.JOB_SECRET:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    from app.services import daily_report
+    day = datetime.date.fromisoformat(date) if date else None
+    summary, xlsx = daily_report.build(day)
+    when = day or datetime.datetime.now(ZoneInfo("Australia/Sydney")).date()
+    sent = EmailService.send_daily_report(summary, xlsx, f"Reliiance_Daily_Report_{when.isoformat()}.xlsx")
+    print(f"Daily report {when}: sent={sent} {summary}")
+    return {**summary, "emailed": sent}
+
+
 @router.post("/daily")
 def run_daily(x_job_key: str = Header(default="")):
     if not settings.JOB_SECRET or x_job_key != settings.JOB_SECRET:

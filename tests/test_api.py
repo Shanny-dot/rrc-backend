@@ -1165,3 +1165,37 @@ def test_welcome_bonus_survives_a_busy_database(env, monkeypatch):
     assert c.get("/api/v1/auth/me", headers=h).json()["total_points"] == 100
     assert c.get("/api/v1/auth/me", headers=h).json()["total_points"] == 100   # not twice
     assert two["welcomed_at"] and len([t for t in tx(db, two["id"]) if t["type"] == "signup_bonus"]) == 1
+
+def test_end_of_day_report(env, monkeypatch):
+    """Nightly Excel report to staff: today's sign-ups with the reason for their points, and every member."""
+    import io
+    import app.services.email_service as es
+    from openpyxl import load_workbook
+    from app.api.routes.auth import limiter
+    limiter.reset()
+    c, db = env["c"], env["db"]
+    emails = []
+    monkeypatch.setattr(es, "_EMAIL_ENABLED", True)
+    monkeypatch.setattr(es, "_send", lambda params: emails.append(params))
+    _setting(db, "launch_bonus_points", "100")
+    c.post("/api/v1/auth/register", json={"full_name": "Nora Night", "email": "nora@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000950", "referral_code": "LAUNCH"})
+    _verify_signup(c, "+61411000950", "nora@example.com")
+    c.post("/api/v1/auth/register", json={"full_name": "Pete Pending", "email": "pete@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000951"})
+
+    assert c.post("/api/v1/jobs/daily-report").status_code == 403
+    r = c.post("/api/v1/jobs/daily-report", headers={"X-Job-Key": "test-job-key"})
+    assert r.status_code == 200, r.text
+    s = r.json()
+    assert s["emailed"] is True and s["joined_today"] >= 2
+    mail = emails[-1]
+    assert mail["subject"].startswith("Daily report") and mail["to"] == es.settings.ADMIN_EMAIL
+    att = mail["attachments"][0]
+    assert att["name"].endswith(".xlsx")
+    wb = load_workbook(io.BytesIO(__import__("base64").b64decode(att["content"])))
+    assert {"Summary", "Joined today", "Points today", "Reward requests today", "Referrals today", "All members"} <= set(wb.sheetnames)
+    today = {row[1]: row for row in wb["Joined today"].iter_rows(min_row=2, values_only=True)}
+    assert today["nora@example.com"][-2] == "Bonus - automatic"
+    assert today["pete@example.com"][-2] == "Not verified yet" and "No LAUNCH code" in today["pete@example.com"][-1]
+    assert any(row[3] == 100 for row in wb["Points today"].iter_rows(min_row=2, values_only=True))

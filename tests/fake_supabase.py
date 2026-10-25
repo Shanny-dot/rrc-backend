@@ -44,6 +44,10 @@ class Query:
     def limit(self, n):
         return self   # callers here only check whether anything matched
 
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
     def is_(self, k, v):
         assert v == "null", "only is_(column, 'null') is supported"
         self.filters.append(lambda r, k=k: r.get(k) is None)
@@ -134,6 +138,8 @@ class Query:
                 v = r.get(k)
                 return (v is None, (0, v) if isinstance(v, (int, float)) else (1, str(v)))
             data.sort(key=sort_key, reverse=desc)
+        if getattr(self, "_range", None):
+            data = data[self._range[0]:self._range[1] + 1]
         if self._single:
             if len(data) != 1:
                 raise APIError({"message": "JSON object requested, multiple (or no) rows returned", "code": "PGRST116"})

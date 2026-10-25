@@ -1,0 +1,27 @@
+name: End-of-day report
+
+# Every night at about 10pm Sydney time the backend emails staff (ADMIN_EMAIL) an Excel report:
+# today's new members, points, reward requests and referrals, and every member's points and status.
+# Run it by hand from the Actions tab at any time ("Run workflow").
+on:
+  schedule:
+    - cron: "0 11 * * *"   # 11:00 UTC = 10pm AEDT / 9pm AEST
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Send the end-of-day report (retries while the server wakes up)
+        env:
+          JOB_SECRET: ${{ secrets.JOB_SECRET }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 180 -X POST -H "X-Job-Key: $JOB_SECRET" \
+                 https://rrc-backend-1dmv.onrender.com/api/v1/jobs/daily-report; then
+              echo; exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 30s"; sleep 30
+          done
+          exit 1
