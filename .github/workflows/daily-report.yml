@@ -1,11 +1,9 @@
-name: End-of-day report
+name: Members report (on demand)
 
-# Every night at about 10pm Sydney time the backend emails staff (ADMIN_EMAIL) an Excel report:
-# today's new members, points, reward requests and referrals, and every member's points and status.
-# Run it by hand from the Actions tab at any time ("Run workflow").
+# Emails staff (ADMIN_EMAIL) an Excel report: the day's new members, points, reward requests and
+# referrals, and every member's points and status. Not scheduled - run it by hand from the Actions
+# tab ("Run workflow") whenever a report is needed.
 on:
-  schedule:
-    - cron: "0 11 * * *"   # 11:00 UTC = 10pm AEDT / 9pm AEST
   workflow_dispatch:
 
 jobs:
@@ -13,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Send the end-of-day report (retries while the server wakes up)
+      - name: Send the report (retries while the server wakes up)
         env:
           JOB_SECRET: ${{ secrets.JOB_SECRET }}
         run: |
