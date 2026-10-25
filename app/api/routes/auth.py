@@ -64,17 +64,30 @@ def _welcome_points_for(row: dict) -> tuple:
     return get_int_setting("welcome_points"), "Welcome Bonus"
 
 
-def _award_welcome_points(user_id: str, label: str = "", row: dict = None) -> int:
+def _has_signup_bonus(user_id: str) -> bool:
+    return bool(supabase_admin.table("transactions").select("id").eq("user_id", user_id)
+                .eq("type", "signup_bonus").execute().data)
+
+
+def _award_welcome_points(user_id: str, label: str = "", row: dict = None):
+    """Points given (0 when none are due), or None if they couldn't be added. On launch day the
+    database was briefly unreachable under load and bonuses were silently lost, so retry a few
+    times — never paying twice — before giving up."""
+    import time
     points, description = _welcome_points_for(row or {})
     if points <= 0:
         return 0
-    try:
-        PointsService.award_points(user_id=user_id, points=points, type="signup_bonus", description=description)
-        supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
-        return points
-    except Exception as e:
-        print(f"Welcome bonus warning {label}: {e}")
-        return 0
+    for attempt in range(3):
+        try:
+            if attempt and _has_signup_bonus(user_id):
+                return points   # an earlier attempt got through
+            PointsService.award_points(user_id=user_id, points=points, type="signup_bonus", description=description)
+            supabase_admin.table("users").update({"bonus_points_granted": True}).eq("id", user_id).execute()
+            return points
+        except Exception as e:
+            print(f"Welcome bonus warning {label} (attempt {attempt + 1}): {e}")
+            time.sleep(0.5 * (attempt + 1))
+    return None
 
 
 SIGNUP_LABELS = {"email": "(register)", "google": "(google)", "apple": "(apple)", "facebook": "(facebook)"}
@@ -101,6 +114,14 @@ def _finish_signup_if_verified(user_id: str):
         return None
     label = SIGNUP_LABELS.get(row.get("signup_method") or "email", "(register)")
     points = _award_welcome_points(user_id, label, row)
+    if points is None:
+        # Couldn't add the points: release the claim so the next app open tries again
+        # (GET /auth/me), rather than leaving the member welcomed without their bonus.
+        try:
+            supabase_admin.table("users").update({"welcomed_at": None}).eq("id", user_id).execute()
+        except Exception as e:
+            print(f"Welcome release warning {label}: {e}")
+        return None
     inviter = None
     if row.get("referred_by"):
         found = supabase_admin.table("users").select("full_name").eq("id", row["referred_by"]).execute().data or []
@@ -739,7 +760,12 @@ def get_me(current_user: dict = Depends(get_current_user)):
         resp = supabase_admin.table("users").select("*").eq("id", user_id).execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
-    me = dict(resp.data[0])
+    row = resp.data[0]
+    if row.get("mobile_verified_at") and row.get("email_verified_at") and not row.get("welcomed_at"):
+        # Verified but not welcomed: a welcome that failed earlier (e.g. under heavy load).
+        if _finish_signup_if_verified(user_id) is not None:
+            row = (supabase_admin.table("users").select("*").eq("id", user_id).execute().data or [row])[0]
+    me = dict(row)
     try:
         me["tier"] = tier_status(user_id, me.get("total_points") or 0)
     except Exception as e:

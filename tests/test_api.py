@@ -1122,3 +1122,46 @@ def test_minimum_balance_before_redeeming(env):
     assert c.get("/api/v1/content").json()["min_points_to_redeem"] == "0"
     _setting(db, "min_points_to_redeem", "150")
     member["total_points"], db.tables["redemptions"] = saved_points, saved_reds
+
+def test_welcome_bonus_survives_a_busy_database(env, monkeypatch):
+    """Launch day: the database briefly refused requests and Welcome Bonuses were silently lost.
+    Now a failed award is retried; if it still fails the member isn't marked welcomed, and the
+    bonus is added the next time the app loads their profile — never twice."""
+    import app.api.routes.auth as auth
+    from app.api.routes.auth import limiter
+    limiter.reset()
+    monkeypatch.setattr("time.sleep", lambda s: None)   # no real waiting between retries
+    c, db = env["c"], env["db"]
+    _setting(db, "launch_bonus_points", "100")
+    real = auth.PointsService.award_points
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] <= fail_times[0]:
+            raise Exception("httpx.ReadError: [Errno 11] Resource temporarily unavailable")
+        return real(*a, **k)
+
+    monkeypatch.setattr(auth.PointsService, "award_points", flaky)
+
+    # 1) Two failures, then success on the third try: one bonus, member welcomed.
+    fail_times = [2]
+    c.post("/api/v1/auth/register", json={"full_name": "Busy One", "email": "busy1@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000901", "referral_code": "LAUNCH"})
+    assert _verify_signup(c, "+61411000901", "busy1@example.com")["points_added"] == 100
+    one = next(u for u in db.tables["users"] if u["email"] == "busy1@example.com")
+    assert one["total_points"] == 100 and one["welcomed_at"]
+    assert len([t for t in tx(db, one["id"]) if t["type"] == "signup_bonus"]) == 1
+
+    # 2) Every try fails: not welcomed, no points — then the next profile load adds them.
+    calls["n"], fail_times[0] = 0, 99
+    c.post("/api/v1/auth/register", json={"full_name": "Busy Two", "email": "busy2@example.com", "password": "Secret123!",
+                                          "mobile": "+61411000902", "referral_code": "LAUNCH"})
+    r = _verify_signup(c, "+61411000902", "busy2@example.com")
+    two = next(u for u in db.tables["users"] if u["email"] == "busy2@example.com")
+    assert two["total_points"] == 0 and not two.get("welcomed_at")
+    fail_times[0] = 0
+    h = {"Authorization": f"Bearer {r['access_token']}"}
+    assert c.get("/api/v1/auth/me", headers=h).json()["total_points"] == 100
+    assert c.get("/api/v1/auth/me", headers=h).json()["total_points"] == 100   # not twice
+    assert two["welcomed_at"] and len([t for t in tx(db, two["id"]) if t["type"] == "signup_bonus"]) == 1
