@@ -1,34 +1,27 @@
 from app.core.supabase_client import supabase_admin
 from fastapi import HTTPException
-import uuid
+
+
+def db_error(e: Exception) -> str:
+    """The reason raised by a points function (e.g. 'insufficient_points'), or ''."""
+    text = str(getattr(e, "message", "") or e)
+    for reason in ("insufficient_points", "user_not_found", "reward_not_found", "reward_inactive",
+                   "out_of_stock", "below_minimum", "negative_balance"):
+        if reason in text:
+            return reason
+    return ""
+
 
 class PointsService:
+    """Every balance change goes through a database function that updates the balance and
+    writes the ledger row in one step (migration 012), so simultaneous requests can't spend
+    the same points twice or lose an update."""
+
     @staticmethod
     def award_points(user_id: str, points: int, type: str, description: str, reference_id: str = None):
-        """
-        Awards points to a user and logs the transaction.
-        Uses admin client to bypass RLS.
-        """
         try:
-            # 1. Update user total_points
-            user_resp = supabase_admin.table("users").select("total_points").eq("id", user_id).single().execute()
-            if not user_resp.data:
-                raise Exception("User not found")
-            
-            new_total = user_resp.data["total_points"] + points
-            supabase_admin.table("users").update({"total_points": new_total}).eq("id", user_id).execute()
-
-            # 2. Insert transaction log
-            transaction_data = {
-                "user_id": user_id,
-                "type": type,
-                "points": points,
-                "description": description
-            }
-            if reference_id:
-                transaction_data["reference_id"] = reference_id
-                
-            supabase_admin.table("transactions").insert(transaction_data).execute()
+            supabase_admin.rpc("apply_points", {"p_user": user_id, "p_points": points, "p_type": type,
+                                                "p_description": description, "p_reference": reference_id}).execute()
         except Exception as e:
             print(f"Error awarding points: {e}")
             raise HTTPException(status_code=500, detail="Failed to award points")
@@ -39,38 +32,28 @@ class PointsService:
 
     @staticmethod
     def deduct_points(user_id: str, points: int, type: str, description: str, reference_id: str = None):
-        """
-        Deducts points for redemptions. Checks balance first.
-        """
         try:
-            # 1. Check user total_points
-            user_resp = supabase_admin.table("users").select("total_points").eq("id", user_id).single().execute()
-            if not user_resp.data:
-                 raise Exception("User not found")
-            
-            current_total = user_resp.data["total_points"]
-
-            if current_total < points:
-                raise Exception("Insufficient points")
-                
-            new_total = current_total - points
-            supabase_admin.table("users").update({"total_points": new_total}).eq("id", user_id).execute()
-
-            # 2. Insert transaction log (points are negative here generally based on logic, but typically we store absolute in transactions or negative. Assuming table schema takes negative)
-            transaction_data = {
-                "user_id": user_id,
-                "type": type,
-                "points": -abs(points), # Ensure it's negative
-                "description": description
-            }
-            if reference_id:
-                transaction_data["reference_id"] = reference_id
-                
-            supabase_admin.table("transactions").insert(transaction_data).execute()
-            
+            supabase_admin.rpc("apply_points", {"p_user": user_id, "p_points": -abs(points), "p_type": type,
+                                                "p_description": description, "p_reference": reference_id}).execute()
             return True
         except Exception as e:
             print(f"Error deducting points: {e}")
-            if "Insufficient" in str(e):
+            if db_error(e) == "insufficient_points":
                 raise HTTPException(status_code=400, detail="Insufficient points balance")
             raise HTTPException(status_code=500, detail="Failed to process point deduction")
+
+    @staticmethod
+    def set_points(user_id: str, new_points: int, description: str) -> int:
+        """Staff set a balance to an exact figure; the difference is logged."""
+        try:
+            supabase_admin.rpc("set_points", {"p_user": user_id, "p_new": new_points,
+                                              "p_description": description}).execute()
+            return new_points
+        except Exception as e:
+            reason = db_error(e)
+            if reason == "user_not_found":
+                raise HTTPException(status_code=404, detail="User not found")
+            if reason == "negative_balance":
+                raise HTTPException(status_code=400, detail="Points can't be below zero")
+            print(f"Error setting points: {e}")
+            raise HTTPException(status_code=500, detail="Failed to update points")

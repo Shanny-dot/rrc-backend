@@ -6,6 +6,7 @@ from app.core.client_ip import client_ip
 from app.core.config import settings
 from app.core.supabase_client import supabase_anon, supabase_admin
 from app.core.auth_middleware import get_current_user, issue_app_token
+from app.core import login_guard
 from app.core.apple_auth import verify_apple_identity_token
 from app.core.social_verify import (
     google_enabled, facebook_enabled, verify_google_id_token, verify_facebook_access_token,
@@ -32,6 +33,23 @@ class RegisterCredentials(BaseModel):
     password: str
     mobile: Optional[str] = None
     referral_code: Optional[str] = None
+
+_COMMON_PASSWORDS = {"password", "password1", "password123", "12345678", "123456789", "1234567890", "qwerty123",
+                     "iloveyou", "11111111", "00000000", "abcd1234", "reliiance", "reliance", "rewards123"}
+
+
+def password_problem(password: str, email: str = "") -> str:
+    """A plain-English reason the password is too weak, or ''."""
+    pw = password or ""
+    if len(pw) < 8:
+        return "Please choose a password with at least 8 characters."
+    if pw.lower() in _COMMON_PASSWORDS or len(set(pw)) < 4:
+        return "That password is too easy to guess. Please choose a different one."
+    local = (email or "").split("@")[0].lower()
+    if local and len(local) >= 4 and local in pw.lower():
+        return "Please don't use your email address in your password."
+    return ""
+
 
 class LoginCredentials(BaseModel):
     email: str
@@ -217,7 +235,8 @@ def _sign_in_social_member(email: str, full_name: str, provider: str, referral_c
 
 
 @router.post("/social-login", response_model=TokenResponse)
-def social_login(creds: SocialLoginRequest):
+@limiter.limit("20/minute")
+def social_login(request: Request, creds: SocialLoginRequest):
     # 0. Google and Facebook are verified directly with Google / Facebook when configured.
     if creds.provider in ("google", "facebook"):
         enabled = google_enabled() if creds.provider == "google" else facebook_enabled()
@@ -435,6 +454,9 @@ def register(request: Request, creds: RegisterCredentials):
     try:
         if not creds.mobile:
              raise HTTPException(status_code=400, detail="Mobile number is required for SMS auth")
+        weak = password_problem(creds.password, creds.email)
+        if weak:
+            raise HTTPException(status_code=400, detail=weak)
 
         # 1. Sign up with Supabase Auth bypassing Rate Limits (Admin API)
         # Bypasses the 3 emails/hour GoTrue limits
@@ -678,9 +700,11 @@ def check_my_code(request: Request, req: MyCodeRequest, current_user: dict = Dep
     return {**_verification_status(fresh), "points_added": points or 0}
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 def login(request: Request, creds: LoginCredentials):
     clean_email = creds.email.strip().lower()
     clean_password = creds.password.strip()
+    login_guard.check_login_allowed(clean_email)
 
     # The App Store review demo account signs in through Supabase like any other
     # member; it no longer has a hard-coded password or a backend-minted fallback token.
@@ -692,7 +716,9 @@ def login(request: Request, creds: LoginCredentials):
         if not auth_response.session:
              raise Exception("Invalid credentials")
     except Exception:
+        login_guard.record_login_failure(clean_email)
         raise HTTPException(status_code=400, detail="Invalid login credentials")
+    login_guard.record_login_success(clean_email)
 
     user = auth_response.user or auth_response.session.user
     meta = getattr(user, "user_metadata", None) or {}
@@ -720,12 +746,15 @@ def _site_origin() -> str:
 
 
 @router.post("/forgot-password")
-def forgot_password(req: ForgotPasswordRequest):
+@limiter.limit("5/minute")
+def forgot_password(request: Request, req: ForgotPasswordRequest):
     email = req.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email address is required")
 
     sent_message = {"success": True, "message": "If an account exists with this email, password reset instructions have been sent."}
+    if not login_guard.reset_email_allowed(email):
+        return sent_message   # same reply, so it doesn't reveal anything; stops inbox flooding
     # The link opens the "Set a new password" page on the admin site, which works
     # on any phone or computer (the app itself has no reset screen).
     redirect_to = f"{_site_origin()}/reset-password"

@@ -1,74 +1,67 @@
+import traceback
+import uuid
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import HTTPException
+from slowapi.errors import RateLimitExceeded
 from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback, broker, jobs
 
-app = FastAPI(title="RRC Backend API")
+app = FastAPI(title="RRC Backend API", docs_url=None, redoc_url=None, openapi_url=None)
+app.state.limiter = auth.limiter
 
 # Turn unexpected errors into a JSON 500 *inside* the CORS middleware, so browsers (the admin
-# site) can read the error instead of reporting a generic "Network Error".
+# site) can read the error instead of reporting a generic "Network Error". The details stay in
+# the server log under a reference; the caller only gets the reference.
 @app.middleware("http")
 async def json_errors(request: Request, call_next):
     try:
         return await call_next(request)
-    except Exception as exc:  # noqa: BLE001
-        import traceback
+    except Exception:  # noqa: BLE001
+        ref = uuid.uuid4().hex[:8].upper()
+        print(f"Server error ref {ref} on {request.method} {request.url.path}")
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {exc}"[:500]})
+        return JSONResponse(status_code=500, content={
+            "detail": f"Something went wrong on our side. Please try again; if it keeps happening, quote reference {ref}."})
 
-# CORS setup (added after json_errors, so it wraps it and error responses keep CORS headers)
+
+@app.exception_handler(RateLimitExceeded)
+async def too_many_requests(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(status_code=429, content={"detail": "Too many attempts. Please wait a minute and try again."})
+
+
+# Only the admin websites may call the API from a browser (the app isn't a browser, so CORS
+# doesn't apply to it). Sign-in uses bearer tokens, not cookies, so no credentials mode.
 allowed_origins = [
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "http://localhost:5175",
-    "http://localhost:5176",
-    "https://rrc-admin.vercel.app",
     "https://admin.reliiancerewards.com.au",
-    "http://admin.reliiancerewards.com.au",
     "https://reliiancerewards.com.au",
-    "http://reliiancerewards.com.au",
     "https://www.reliiancerewards.com.au",
-    "http://www.reliiancerewards.com.au",
+    "https://rrc-admin.vercel.app",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https?://.*(reliiancerewards\.com\.au|vercel\.app|localhost)(:\d+)?",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Vercel previews of the admin site, and local development
+    allow_origin_regex=r"https://rrc-admin(-[a-z0-9-]+)?\.vercel\.app|http://localhost(:\d+)?",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Job-Key"],
+    max_age=600,
 )
 
+
 @app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    if request.method == "OPTIONS":
-        response = JSONResponse(content={"status": "ok"}, status_code=200)
-    else:
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            response = JSONResponse(content={"detail": str(exc)}, status_code=500)
-
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
     return response
-
-@app.exception_handler(HTTPException)
-async def custom_http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Credentials": "true"
-        }
-    )
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(referrals.router, prefix="/api/v1/referrals", tags=["Referrals"])

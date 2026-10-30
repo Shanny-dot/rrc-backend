@@ -128,19 +128,11 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
     current_points = user_resp.data[0].get("total_points", 0) or 0
     diff = new_points - current_points
 
-    resp = supabase_admin.table("users").update({"total_points": new_points}).eq("id", id).execute()
+    # Balance and ledger row (signed amount, shown in the member's Recent Activity) in one step
+    PointsService.set_points(id, new_points, (reason or "Admin adjustment").strip())
+    resp = supabase_admin.table("users").select("*").eq("id", id).execute()
 
     if diff != 0:
-        # Logged to the same table the app reads, with a signed amount, so members see it in Recent Activity.
-        try:
-            supabase_admin.table("transactions").insert({
-                "user_id": id,
-                "points": diff,
-                "type": "admin_adjustment",
-                "description": (reason or "Admin adjustment").strip(),
-            }).execute()
-        except Exception as e:
-            print("Transaction log warning:", e)
         if diff > 0:
             notify_service.push(id, "points", f"+{diff:,} points added", (reason or "Points added by Reliiance").strip())
             from app.services.member_alerts import after_points_added

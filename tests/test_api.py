@@ -239,6 +239,23 @@ def test_admin_points_adjustment_shows_in_activity(env):
     acts = c.get("/api/v1/transactions/", headers=env["old"]).json()
     assert acts[0]["title"] == "Points added by Reliiance team" and acts[0]["points"] == 250
     assert acts[0]["reason"] == "Goodwill"
+    r = c.put(f"/api/v1/admin/users/{FRIEND_ID}/points", headers=env["admin"], json={"new_points": -5})
+    assert r.status_code == 400 and user(db, FRIEND_ID)["total_points"] == cur + 250
+
+
+def test_double_tap_redeem_is_refused(env):
+    c, h, db = env["c"], env["member"], env["db"]
+    member = user(db, MEMBER_ID)
+    saved = member["total_points"]
+    member["total_points"] = 1000
+    toy = "/api/v1/rewards/22222222-0000-4000-8000-000000000003/redeem"   # 50 points
+    assert c.post(toy, headers=h).status_code == 200
+    r = c.post(toy, headers=h)
+    assert r.status_code == 409 and "just requested" in r.json()["detail"]
+    assert member["total_points"] == 950   # charged once
+    member["total_points"] = saved
+    for red in db.tables["redemptions"]:   # leave no "just requested" reward for later tests
+        red["requested_at"] = "2026-01-01T00:00:00+00:00"
 
 
 def test_profile_update_with_new_options(env):
@@ -290,7 +307,54 @@ def test_errors_are_readable_by_the_admin_site(env):
         db.columns["events"] = saved
     assert r.status_code == 500
     assert r.headers.get("access-control-allow-origin") == "https://rrc-admin.vercel.app"
-    assert "category" in r.json()["detail"]
+    # a reference to quote, but no internal details (table names, error text) for an attacker
+    assert "reference" in r.json()["detail"] and "category" not in r.json()["detail"]
+
+
+def test_other_websites_cannot_call_the_api(env):
+    r = env["c"].get("/api/v1/auth/me", headers={**env["member"], "Origin": "https://evil.example.com"})
+    assert "access-control-allow-origin" not in r.headers
+    r = env["c"].get("/api/v1/auth/me", headers={**env["member"], "Origin": "https://someone-else.vercel.app"})
+    assert "access-control-allow-origin" not in r.headers
+    r = env["c"].get("/health")
+    assert r.headers["x-frame-options"] == "DENY" and r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_password_guessing_locks_the_account(env):
+    from app.core import login_guard
+    from app.api.routes.auth import limiter
+    login_guard.reset_all(); limiter.reset()
+    db, c = env["db"], env["c"]
+    db.auth.accounts["guess@example.com"] = ("Right-Pass-77", "00000000-0000-4000-8000-0000000000e1", "Gus")
+    for _ in range(5):
+        assert c.post("/api/v1/auth/login", json={"email": "guess@example.com", "password": "wrong"}).status_code == 400
+    r = c.post("/api/v1/auth/login", json={"email": "guess@example.com", "password": "Right-Pass-77"})
+    assert r.status_code == 429 and "wait" in r.json()["detail"]   # locked even with the right password
+    login_guard.reset_all(); limiter.reset()
+    assert c.post("/api/v1/auth/login", json={"email": "guess@example.com", "password": "Right-Pass-77"}).status_code == 200
+
+
+def test_reset_emails_are_limited_per_address(env):
+    from app.core import login_guard
+    from app.api.routes.auth import limiter
+    login_guard.reset_all(); limiter.reset()
+    db, c = env["db"], env["c"]
+    before = len(db.auth.reset_requests)
+    for _ in range(5):
+        assert c.post("/api/v1/auth/forgot-password", json={"email": "flood@example.com"}).status_code == 200
+    assert len(db.auth.reset_requests) - before == 3
+    login_guard.reset_all(); limiter.reset()
+
+
+def test_weak_passwords_are_refused_at_sign_up(env):
+    from app.api.routes.auth import limiter
+    limiter.reset()
+    c = env["c"]
+    for pw, words in (("short1", "at least 8"), ("password123", "too easy"), ("jamesbond-2026", "email address")):
+        r = c.post("/api/v1/auth/register", json={"full_name": "J B", "email": "jamesbond@example.com", "password": pw,
+                                                  "mobile": "+61411000901"})
+        assert r.status_code == 400 and words in r.json()["detail"], (pw, r.text)
+    limiter.reset()
 
 
 def test_login_repairs_missing_profile(env):
@@ -1107,10 +1171,16 @@ def test_minimum_balance_before_redeeming(env):
     assert r.status_code == 400 and "at least 150 points" in r.json()["detail"] and "first reward" in r.json()["detail"]
     assert member["total_points"] == 100
 
+    def later():   # a deliberate repeat, not a double tap
+        for red in db.tables["redemptions"]:
+            red["requested_at"] = "2026-01-01T00:00:00+00:00"
+
     member["total_points"] = 150
     assert c.post(toy, headers=h).status_code == 200   # first reward
     assert member["total_points"] == 100
+    later()
     assert c.post(toy, headers=h).status_code == 200   # later rewards: no minimum
+    later()
     assert c.post(toy, headers=h).status_code == 200
     assert member["total_points"] == 0
     assert c.post(toy, headers=h).status_code == 400   # but still can't spend more than they have

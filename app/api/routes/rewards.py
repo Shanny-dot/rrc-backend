@@ -4,7 +4,7 @@ from app.core.supabase_client import supabase_admin
 from app.core.auth_middleware import get_current_user
 from app.schemas.reward import RewardInDB
 from app.schemas.redemption import RedemptionInDB
-from app.services.points_service import PointsService
+from app.services.points_service import db_error
 from app.services.email_service import EmailService
 from app.services.program_service import get_setting, get_int_setting
 from app.services import redemption_service
@@ -99,35 +99,30 @@ def redeem_reward(id: str, current_user: dict = Depends(get_current_user)):
     if balance < reward["points_required"]:
         raise HTTPException(status_code=400, detail="Insufficient points balance")
 
-    # 3. Create the pending redemption first, so the points transaction can reference it
-    red_resp = supabase_admin.table("redemptions").insert({
-        "user_id": user_id,
-        "reward_id": id,
-        "status": "pending",
-        "points_used": reward["points_required"],
-    }).execute()
-    if not red_resp.data:
-        raise HTTPException(status_code=500, detail="Failed to create redemption request")
-    redemption = red_resp.data[0]
-
-    # 4. Deduct points, linked to the redemption; undo the redemption if that fails
+    # 3. Request, deduction, ledger row and stock in one locked database step; the checks above
+    #    are repeated there, so two taps at once can't spend the same points twice.
     try:
-        PointsService.deduct_points(
-            user_id=user_id,
-            points=reward["points_required"],
-            type="redemption",
-            description=f"Redeemed {reward['title']}",
-            reference_id=redemption["id"],
-        )
-    except HTTPException:
-        supabase_admin.table("redemptions").delete().eq("id", redemption["id"]).execute()
-        raise
+        redemption = supabase_admin.rpc("redeem_reward", {"p_user": user_id, "p_reward": id,
+                                                          "p_min_first": minimum}).execute().data
+    except Exception as e:
+        reason = db_error(e)
+        message = {
+            "insufficient_points": "Insufficient points balance",
+            "below_minimum": f"You need at least {minimum:,} points in your account before you can redeem your first reward.",
+            "out_of_stock": "Reward out of stock",
+            "reward_inactive": "This reward is no longer available",
+            "reward_not_found": "Reward not found",
+        }.get(reason)
+        if message:
+            raise HTTPException(status_code=404 if reason == "reward_not_found" else 400, detail=message)
+        print(f"Redeem failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create redemption request")
+    if redemption.get("duplicate"):   # a double tap: the first request already went through
+        raise HTTPException(status_code=409, detail=(
+            "You've just requested this reward - check My rewards. To request another one, "
+            "please wait a few seconds and try again."))
 
-    # 5. Decrease stock
-    if reward.get("stock") is not None:
-        supabase_admin.table("rewards").update({"stock": reward["stock"] - 1}).eq("id", id).execute()
-
-    # 6. Emails: confirmation to the member, alert to staff
+    # 4. Emails: confirmation to the member, alert to staff
     redemption_service.notify_status(redemption["id"], "pending")
     EmailService.notify_admin_new_redemption(reward_name=reward["title"], member_name=user.get("full_name"))
 

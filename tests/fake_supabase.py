@@ -152,6 +152,14 @@ class _Obj:
         self.__dict__.update(kw)
 
 
+class _Rpc:
+    def __init__(self, run):
+        self._run = run
+
+    def execute(self):
+        return Result(self._run())
+
+
 class FakeAuth:
     """Supabase Auth stand-in. `accounts` maps email -> (password, auth user id, full_name)."""
 
@@ -213,6 +221,67 @@ class FakeSupabase:
 
     def table(self, name):
         return Query(self, name)
+
+    def rpc(self, fn, params):
+        """The points functions from migration 012, with the same rules and error reasons."""
+        return _Rpc(lambda: getattr(self, "_rpc_" + fn)(**params))
+
+    def _member(self, uid):
+        u = next((r for r in self.tables.get("users", []) if r["id"] == uid), None)
+        if u is None:
+            raise APIError({"message": "user_not_found", "code": "P0001"})
+        return u
+
+    def _ledger(self, uid, ttype, points, description, ref=None):
+        self.table("transactions").insert({"user_id": uid, "type": ttype, "points": points,
+                                           "description": description, "reference_id": ref}).execute()
+
+    def _rpc_apply_points(self, p_user, p_points, p_type, p_description, p_reference=None):
+        u = self._member(p_user)
+        if u["total_points"] + p_points < 0:
+            raise APIError({"message": "insufficient_points", "code": "P0001"})
+        u["total_points"] += p_points
+        if p_points:
+            self._ledger(p_user, p_type, p_points, p_description, p_reference)
+        return u["total_points"]
+
+    def _rpc_set_points(self, p_user, p_new, p_description):
+        if p_new < 0:
+            raise APIError({"message": "negative_balance", "code": "P0001"})
+        u = self._member(p_user)
+        if p_new != u["total_points"]:
+            self._ledger(p_user, "admin_adjustment", p_new - u["total_points"], p_description)
+            u["total_points"] = p_new
+        return p_new
+
+    def _rpc_redeem_reward(self, p_user, p_reward, p_min_first=0):
+        u = self._member(p_user)
+        reds = self.tables.setdefault("redemptions", [])
+        recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=10)).isoformat()
+        dup = [r for r in reds if r["user_id"] == p_user and r["reward_id"] == p_reward
+               and r["status"] == "pending" and r.get("requested_at", "") > recent]
+        if dup:
+            return {**copy.deepcopy(dup[-1]), "duplicate": True}
+        r = next((x for x in self.tables.get("rewards", []) if x["id"] == p_reward), None)
+        fail = lambda reason: APIError({"message": reason, "code": "P0001"})  # noqa: E731
+        if r is None:
+            raise fail("reward_not_found")
+        if not r.get("is_active", True):
+            raise fail("reward_inactive")
+        if r.get("stock") is not None and r["stock"] <= 0:
+            raise fail("out_of_stock")
+        if p_min_first > 0 and u["total_points"] < p_min_first and \
+                not any(x["user_id"] == p_user and x["status"] != "rejected" for x in reds):
+            raise fail("below_minimum")
+        if u["total_points"] < r["points_required"]:
+            raise fail("insufficient_points")
+        red = self.table("redemptions").insert({"user_id": p_user, "reward_id": p_reward, "status": "pending",
+                                                 "points_used": r["points_required"]}).execute().data[0]
+        u["total_points"] -= r["points_required"]
+        self._ledger(p_user, "redemption", -r["points_required"], "Redeemed " + r["title"], red["id"])
+        if r.get("stock") is not None:
+            r["stock"] -= 1
+        return red
 
     def check_columns(self, table, row):
         allowed = self.columns.get(table)
