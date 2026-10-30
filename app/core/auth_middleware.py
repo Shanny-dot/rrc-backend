@@ -55,13 +55,23 @@ def _is_deleted(user_id: str) -> bool:
     return user_id in load_deleted_users_map()
 
 
+def _session_aal(token: str) -> str:
+    """'aal2' when the Supabase session was confirmed with a two-step (authenticator app) code.
+    Read only after Supabase has accepted the token, so the signature is already checked."""
+    try:
+        return jwt.decode(token, options={"verify_signature": False}).get("aal") or ""
+    except Exception:
+        return ""
+
+
 def _authenticate(token: str) -> dict:
     # 1. Supabase-issued session tokens
     try:
         user_response = supabase_anon.auth.get_user(token)
         if user_response and user_response.user:
             return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated",
-                    "user_metadata": getattr(user_response.user, "user_metadata", None) or {}}
+                    "user_metadata": getattr(user_response.user, "user_metadata", None) or {},
+                    "aal": _session_aal(token)}
     except Exception:
         pass
 
@@ -108,6 +118,14 @@ def get_current_admin(current_user: dict = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions. Admin access required.",
+        )
+
+    # Staff must sign in to the admin site with their password AND an authenticator-app code.
+    # App tokens (member sign-in) never carry that, so they can't be used for admin access.
+    if current_user.get("aal") != "aal2":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="two_step_required: please sign in again and enter the code from your authenticator app.",
         )
 
     return current_user

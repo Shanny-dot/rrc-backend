@@ -1,6 +1,7 @@
 import datetime
 import os
 import sys
+import uuid
 
 import pytest
 
@@ -141,6 +142,16 @@ def seed(db):
     t["wishlist"], t["event_rsvps"], t["event_guests"] = [], [], []
 
 
+def admin_session(db, aal):
+    """Headers for a Supabase admin-site session at the given assurance level ('aal1' = password
+    only, 'aal2' = password + authenticator code)."""
+    import jwt
+    token = jwt.encode({"sub": ADMIN_ID, "aal": aal, "n": str(uuid.uuid4())}, "test-only", algorithm="HS256")
+    db.auth.accounts.setdefault("admin@rrc.com", ("AdminPass#2026", ADMIN_ID, "Admin"))
+    db.auth.sessions[token] = ADMIN_ID
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture(scope="module")
 def env():
     db = FakeSupabase(COLUMNS, DEFAULTS, CHECKS)
@@ -159,7 +170,7 @@ def env():
     tok = lambda uid, email: {"Authorization": f"Bearer {issue_app_token(uid, email)}"}  # noqa: E731
     return {
         "db": db, "c": client,
-        "admin": tok(ADMIN_ID, "admin@rrc.com"),
+        "admin": admin_session(db, "aal2"),
         "member": tok(MEMBER_ID, "manoj@example.com"),
         "old": tok(FRIEND_ID, "old@example.com"),
     }

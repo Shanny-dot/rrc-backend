@@ -320,6 +320,21 @@ def test_other_websites_cannot_call_the_api(env):
     assert r.headers["x-frame-options"] == "DENY" and r.headers["x-content-type-options"] == "nosniff"
 
 
+def test_admin_pages_need_the_two_step_code(env):
+    from tests.conftest import ADMIN_ID, admin_session
+    from app.core.auth_middleware import issue_app_token
+    c = env["c"]
+    assert c.get("/api/v1/admin/users", headers=env["admin"]).status_code == 200
+    # Password only (no authenticator code yet)
+    r = c.get("/api/v1/admin/users", headers=admin_session(env["db"], "aal1"))
+    assert r.status_code == 403 and r.json()["detail"].startswith("two_step_required")
+    # A member-app token for the admin's account
+    r = c.get("/api/v1/admin/users", headers={"Authorization": f"Bearer {issue_app_token(ADMIN_ID, 'admin@rrc.com')}"})
+    assert r.status_code == 403
+    # Members are still refused outright
+    assert c.get("/api/v1/admin/users", headers=env["member"]).status_code == 403
+
+
 def test_password_guessing_locks_the_account(env):
     from app.core import login_guard
     from app.api.routes.auth import limiter
