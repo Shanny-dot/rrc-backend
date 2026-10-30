@@ -6,11 +6,13 @@ import json
 def initialize_firebase():
     if not firebase_admin._apps:
         try:
-            # FIREBASE_CREDENTIALS_JSON is the service account JSON, base64 encoded.
-            if settings.FIREBASE_CREDENTIALS_JSON:
-                import base64
-                decoded_creds = base64.b64decode(settings.FIREBASE_CREDENTIALS_JSON).decode('utf-8')
-                cred_dict = json.loads(decoded_creds)
+            # FIREBASE_CREDENTIALS_JSON is the service account JSON, pasted as-is or base64 encoded.
+            raw = (settings.FIREBASE_CREDENTIALS_JSON or "").strip()
+            if raw:
+                if not raw.startswith("{"):
+                    import base64
+                    raw = base64.b64decode(raw).decode('utf-8')
+                cred_dict = json.loads(raw)
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
         except Exception as e:
