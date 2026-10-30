@@ -942,7 +942,15 @@ def test_final_member_emails(env, monkeypatch):
     # Account deleted
     tok = env["c"].post("/api/v1/auth/login", json={"email": "newbie@example.com", "password": "Secret123!"}).json()["access_token"]
     assert c.delete("/api/v1/auth/account", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
-    assert emails[-1]["subject"] == "Your account has been deleted" and emails[-1]["to"] == "newbie@example.com"
+    assert emails[-1]["subject"] == "Your account has been closed" and emails[-1]["to"] == "newbie@example.com"
+    assert "reopen your account" in emails[-1]["html"]
+
+    # Closed, not erased: the member can't sign in, but staff still see everything and can restore it
+    member = next(u for u in db.tables["users"] if u["email"] == "newbie@example.com")
+    assert member["deleted_at"] and member["id"] in [u["id"] for u in c.get("/api/v1/admin/deleted-users", headers=a).json()]
+    assert c.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"}).status_code in (401, 403)
+    assert c.post(f"/api/v1/admin/users/{member['id']}/restore", headers=a).status_code == 200
+    assert c.post("/api/v1/auth/login", json={"email": "newbie@example.com", "password": "Secret123!"}).status_code == 200
 
 
 def test_points_expiring_email_lists_affordable_rewards(env, monkeypatch):

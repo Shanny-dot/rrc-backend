@@ -50,14 +50,14 @@ def list_users(admin: dict = Depends(get_current_admin)):
 
 @router.get("/deleted-users")
 def list_deleted_users(admin: dict = Depends(get_current_admin)):
-    thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+    # Every closed account, however long ago, so staff can always restore it.
     resp = supabase_admin.table("users").select("*").order("created_at", desc=True).execute()
     dmap = load_deleted_users_map()
     deleted_users = []
     for u in (resp.data or []):
         uid = u.get("id")
         del_time = u.get("deleted_at") or dmap.get(uid)
-        if del_time and str(del_time) >= thirty_days_ago:
+        if del_time:
             u_copy = dict(u)
             u_copy["deleted_at"] = del_time
             deleted_users.append(u_copy)

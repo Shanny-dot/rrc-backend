@@ -262,17 +262,15 @@ class EmailService:
         return _deliver(to_email, "Your account details were updated", _layout("Your details were updated", body))
 
     @staticmethod
-    def send_account_deleted(to_email: str, full_name: str, points_lost: int) -> bool:
-        points_html = (f"<p>Any unused points ({points_lost:,}) have been removed and can't be restored.</p>"
-                       if points_lost else "<p>Any unused points have been removed and can't be restored.</p>")
+    def send_account_deleted(to_email: str, full_name: str) -> bool:
         body = f"""
         <p>Hi {_esc(_first(full_name))},</p>
-        <p>As requested, your {_esc(settings.FROM_NAME)} account has been deleted.</p>
-        {points_html}
-        <p>Thanks for being a member. You're welcome back any time — just sign up again in the app.</p>
+        <p>As requested, your {_esc(settings.FROM_NAME)} account has been closed and you can no longer sign in.</p>
+        <p>Thanks for being a member. If you'd like to come back, contact us at
+        membership@reliiancerewards.com.au and we can reopen your account.</p>
         <p style="color:#777;font-size:13px">If you didn't ask for this, please contact us as soon as possible.</p>
         """
-        return _deliver(to_email, "Your account has been deleted", _layout("Your account has been deleted", body))
+        return _deliver(to_email, "Your account has been closed", _layout("Your account has been closed", body))
 
     @staticmethod
     def send_points_added(to_email: str, full_name: str, points: int, reason: str, balance: int) -> bool:

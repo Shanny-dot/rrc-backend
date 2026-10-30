@@ -848,13 +848,12 @@ def update_fcm_token(req: FCMTokenRequest, current_user: dict = Depends(get_curr
 def delete_account(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
     try:
-        member = (supabase_admin.table("users").select("full_name, email, total_points").eq("id", user_id).execute().data or [{}])[0]
-        # Delete from public.users (triggers DB cascade deletes)
-        supabase_admin.table("users").delete().eq("id", user_id).execute()
-        # Delete from auth.users (Supabase Auth)
-        supabase_admin.auth.admin.delete_user(user_id)
+        member = (supabase_admin.table("users").select("full_name, email").eq("id", user_id).execute().data or [{}])[0]
+        # Closed, not erased: the member can no longer sign in or get messages, but their profile,
+        # points and history stay so staff can restore the account (Deleted users > Restore).
+        supabase_admin.table("users").update({"deleted_at": _now_iso(), "fcm_token": None}).eq("id", user_id).execute()
         if member.get("email"):
-            EmailService.send_account_deleted(member["email"], member.get("full_name"), member.get("total_points") or 0)
+            EmailService.send_account_deleted(member["email"], member.get("full_name"))
         return {"success": True, "message": "Account deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to delete account: {str(e)}")
