@@ -1,0 +1,29 @@
+name: Uptime check
+
+# Every hour: is the server answering, and can it reach the database? A failed check is
+# emailed by GitHub (failed scheduled runs go to whoever enabled the schedule). For checks
+# every few minutes, add https://rrc-backend-1dmv.onrender.com/health/db to a free uptime
+# service as well (see docs/DISASTER_RECOVERY.md).
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Server and database answer
+        run: |
+          for attempt in 1 2 3; do
+            if curl -fsS --max-time 30 https://rrc-backend-1dmv.onrender.com/health/db; then
+              echo; exit 0
+            fi
+            echo "Attempt $attempt failed; retrying in 30s"; sleep 30
+          done
+          echo "::error::The server or its database is not answering"
+          exit 1

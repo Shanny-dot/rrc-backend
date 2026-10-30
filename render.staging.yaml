@@ -1,0 +1,38 @@
+# Test (staging) copy of the backend - see docs/STAGING.md. NOT used by the live service.
+# Create it once in Render: New > Blueprint > this repository > blueprint file "render.staging.yaml".
+# It deploys the `staging` branch, so changes can be tried there before they reach `main` (live).
+services:
+  - type: web
+    name: rrc-backend-staging
+    runtime: python
+    region: singapore
+    plan: free            # sleeps when idle; fine for testing
+    branch: staging
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health/db
+    envVars:
+      # Values come from the STAGING Supabase project and test accounts - never the live ones.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true   # different from live, so live and test sign-ins can't be mixed
+      - key: FRONTEND_URL
+        value: https://rrc-admin-git-staging-shannytanus-projects.vercel.app
+      - key: RESEND_API_KEY
+        value: ""
+      - key: FIREBASE_CREDENTIALS_JSON
+        value: ""             # no phone alerts from the test copy
+      - key: ADMIN_EMAIL
+        sync: false           # a test inbox, not membership@
+      - key: GUNI_SMS_API_KEY
+        value: ""             # no real text messages from the test copy
+      - key: GOOGLE_CLIENT_IDS
+        sync: false

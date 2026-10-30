@@ -86,3 +86,15 @@ app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/health/db")
+def health_database():
+    """For uptime checks: the server is up AND can read the database. No data is returned."""
+    from app.core.supabase_client import supabase_admin
+    try:
+        supabase_admin.table("app_content").select("key").limit(1).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Health check: database unreachable: {e}")
+        return JSONResponse(status_code=503, content={"status": "database unreachable"})

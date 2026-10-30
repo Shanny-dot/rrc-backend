@@ -1,0 +1,144 @@
+name: Nightly backup and restore test
+
+# Every night (about 3am Sydney time):
+#  1. backup  - dumps the database (members, points history, rewards, everything) and every
+#               uploaded image, encrypts it with BACKUP_PASSPHRASE (AES-256) and keeps it as a
+#               workflow artifact for 30 days. Unencrypted data never leaves the runner.
+#  2. restore - restores that backup into a throwaway database and checks every table has the
+#               same number of rows, so we know each backup can really be restored.
+# A failed run is emailed by GitHub to whoever enabled the schedule.
+# Recovery steps: docs/DISASTER_RECOVERY.md.
+#
+# Repository secrets needed (Settings > Secrets and variables > Actions):
+#   BACKUP_DATABASE_URL   Supabase > Connect > "Session pooler" connection string, with the DB password
+#   BACKUP_PASSPHRASE     a long random passphrase, also kept in the business password manager
+#   SUPABASE_URL, SUPABASE_SERVICE_KEY   (for the images; the backup still runs without them)
+on:
+  schedule:
+    - cron: "30 16 * * *"   # 16:30 UTC = 2:30am AEST / 3:30am AEDT
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      name: ${{ steps.pack.outputs.name }}
+    env:
+      DB_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        run: |
+          [ -n "$DB_URL" ] || { echo "::error::BACKUP_DATABASE_URL is not set"; exit 1; }
+          [ ${#PASSPHRASE} -ge 20 ] || { echo "::error::BACKUP_PASSPHRASE is missing or shorter than 20 characters"; exit 1; }
+
+      - name: Install the PostgreSQL 17 client (matches the database)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Dump the database
+        run: |
+          mkdir -p out
+          # Everything needed to rebuild: our tables (public), sign-in accounts (auth) and image records (storage)
+          pg_dump "$DB_URL" --format=custom --no-owner --no-privileges -n public -n auth -n storage -f out/database.dump
+          # Readable structure of our tables, also used to set up a test (staging) database
+          pg_dump "$DB_URL" --schema-only --no-owner --no-privileges -n public -f out/schema-public.sql
+          # Row count of every table, checked again after the test restore
+          psql "$DB_URL" -At -c "select string_agg(format('select %L as t, count(*) as n from public.%I', tablename, tablename), ' union all ' order by tablename) from pg_tables where schemaname = 'public'" > /tmp/q.sql
+          psql "$DB_URL" -At -F $'\t' -f /tmp/q.sql > out/row-counts.tsv
+          psql "$DB_URL" -At -c "select coalesce(sum(total_points), 0) from public.users" > out/points-total.txt
+          cat out/row-counts.tsv
+
+      - name: Download uploaded images
+        run: |
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_KEY" ]; then
+            python3 ops/backup_storage.py out/storage
+          else
+            echo "::warning::SUPABASE_URL / SUPABASE_SERVICE_KEY not set - images not included"
+          fi
+
+      - name: Encrypt
+        id: pack
+        run: |
+          NAME="rrc-backup-$(date -u +%Y-%m-%d_%H%M)"
+          date -u +%Y-%m-%dT%H:%M:%SZ > out/taken-at.txt
+          tar -czf - -C out . | gpg --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" \
+              --symmetric --cipher-algo AES256 -o "$NAME.tar.gz.gpg"
+          sha256sum "$NAME.tar.gz.gpg" > "$NAME.sha256"
+          rm -rf out
+          ls -l "$NAME".*
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: ${{ steps.pack.outputs.name }}.*
+          retention-days: 30
+          if-no-files-found: error
+
+  restore-test:
+    needs: backup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: restore-test-only
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+      TEST_DB: postgresql://postgres:restore-test-only@localhost:5432/postgres
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.backup.outputs.name }}
+
+      - name: Check and decrypt the backup
+        run: |
+          sha256sum -c ./*.sha256
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" -d ./*.tar.gz.gpg | tar -xzf -
+          ls -l
+
+      - name: Restore into a throwaway database
+        run: |
+          # Supabase's own roles and auth helpers that our tables' rules refer to
+          psql "$TEST_DB" -v ON_ERROR_STOP=1 <<'SQL'
+          create role anon nologin; create role authenticated nologin; create role service_role nologin;
+          create schema auth;
+          create function auth.role() returns text language sql as $$ select 'service_role' $$;
+          create function auth.uid() returns uuid language sql as $$ select null::uuid $$;
+          SQL
+          pg_restore --no-owner --no-privileges -n public -d "$TEST_DB" database.dump 2> restore.log || true
+          echo "Restore messages:"; cat restore.log
+
+      - name: Check every table came back complete
+        run: |
+          fail=0
+          {
+            echo "### Restore test of ${{ needs.backup.outputs.name }}"
+            echo "| Table | In backup | Restored |"; echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r table expected; do
+            got=$(psql "$TEST_DB" -At -c "select count(*) from public.\"$table\"" 2>/dev/null || echo "missing")
+            echo "| $table | $expected | $got |" >> "$GITHUB_STEP_SUMMARY"
+            [ "$got" = "$expected" ] || { echo "::error::$table: expected $expected rows, restored $got"; fail=1; }
+          done < row-counts.tsv
+          points=$(psql "$TEST_DB" -At -c "select coalesce(sum(total_points), 0) from public.users")
+          [ "$points" = "$(cat points-total.txt)" ] || { echo "::error::points total differs: $points vs $(cat points-total.txt)"; fail=1; }
+          echo "Members' points total matches: $points" >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
