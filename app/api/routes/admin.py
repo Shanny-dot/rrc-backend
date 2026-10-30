@@ -393,9 +393,13 @@ def scan_qr(req: QRScanRequest):
     if rsvp["attended"]:
          raise HTTPException(status_code=400, detail="QR code already scanned and attended")
 
-    # 2. Mark as Attended and Award Points to Attendee
+    # 2. Mark as Attended and Award Points to Attendee. Only the request that actually flips
+    #    attended (false -> true) pays, so a double scan can't pay twice.
     now = datetime.datetime.utcnow().isoformat()
-    supabase_admin.table("event_rsvps").update({"attended": True, "attended_at": now, "points_awarded": True}).eq("id", rsvp["id"]).execute()
+    flipped = supabase_admin.table("event_rsvps").update({"attended": True, "attended_at": now, "points_awarded": True}) \
+        .eq("id", rsvp["id"]).eq("attended", False).execute()
+    if not flipped.data:
+         raise HTTPException(status_code=400, detail="QR code already scanned and attended")
 
     points_to_award = rsvp["events"]["points_for_attending"]
     if points_to_award > 0:

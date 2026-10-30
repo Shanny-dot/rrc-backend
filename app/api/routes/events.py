@@ -7,9 +7,11 @@ from app.services.qr_service import QRService
 from app.services.email_service import EmailService
 from app.services import notify_service, invite_service
 from app.services.program_service import event_when
+from app.core import send_limits
 import uuid
 
 router = APIRouter()
+MAX_GUESTS_PER_INVITE = 10
 
 @router.get("", response_model=List[EventInDB], include_in_schema=False)
 @router.get("/", response_model=List[EventInDB])
@@ -102,6 +104,10 @@ def _member(user_id: str) -> dict:
 @router.post("/{id}/invite-guests")
 def invite_guests(id: str, guests: List[GuestCreate], current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
+    if len(guests) > MAX_GUESTS_PER_INVITE:
+        raise HTTPException(status_code=400, detail=f"You can invite up to {MAX_GUESTS_PER_INVITE} guests at a time.")
+    # Each guest gets an email from our address: capped per member per day
+    send_limits.use(user_id, "guest_invites", len(guests))
 
     # 1. Get Event and Inviter Details
     event_resp = supabase_admin.table("events").select("*").eq("id", id).execute()
@@ -192,10 +198,14 @@ def scan_attendance(id: str, current_user: dict = Depends(get_current_user)):
     if rsvp["attended"]:
         raise HTTPException(status_code=400, detail="You have already claimed points for this event.")
 
-    # 3. Mark Attended
+    # 3. Mark Attended. Only the request that actually flips attended (false -> true) pays,
+    #    so two check-ins sent at the same moment can't both claim the points.
     import datetime
     now = datetime.datetime.utcnow().isoformat()
-    supabase_admin.table("event_rsvps").update({"attended": True, "attended_at": now, "points_awarded": True}).eq("id", rsvp["id"]).execute()
+    flipped = supabase_admin.table("event_rsvps").update({"attended": True, "attended_at": now, "points_awarded": True}) \
+        .eq("id", rsvp["id"]).eq("attended", False).execute()
+    if not flipped.data:
+        raise HTTPException(status_code=400, detail="You have already claimed points for this event.")
 
     # 4. Award User Attendance Points
     from app.services.points_service import PointsService

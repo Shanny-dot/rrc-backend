@@ -14,6 +14,12 @@ from app.services.bonus_service import BonusService
 from app.services.points_service import PointsService
 from app.services.program_service import get_int_setting, _parse_ts, event_when
 from app.services.email_service import EmailService
+import hmac
+
+
+def _job_key_ok(key: str) -> bool:
+    """The scheduled jobs' shared key, compared in constant time so it can't be guessed byte by byte."""
+    return bool(settings.JOB_SECRET) and hmac.compare_digest((key or "").encode(), settings.JOB_SECRET.encode())
 
 router = APIRouter()
 
@@ -170,7 +176,7 @@ def points_expiry(today: datetime.date, members: list) -> dict:
 @router.post("/daily-report")
 def run_daily_report(x_job_key: str = Header(default=""), date: str = None):
     """End-of-day staff report (Excel by email). ?date=YYYY-MM-DD for another Sydney day."""
-    if not settings.JOB_SECRET or x_job_key != settings.JOB_SECRET:
+    if not _job_key_ok(x_job_key):
         raise HTTPException(status_code=403, detail="Not allowed")
     from app.services import daily_report
     day = datetime.date.fromisoformat(date) if date else None
@@ -183,7 +189,7 @@ def run_daily_report(x_job_key: str = Header(default=""), date: str = None):
 
 @router.post("/daily")
 def run_daily(x_job_key: str = Header(default="")):
-    if not settings.JOB_SECRET or x_job_key != settings.JOB_SECRET:
+    if not _job_key_ok(x_job_key):
         raise HTTPException(status_code=403, detail="Not allowed")
     today = _today()
     members = [m for m in (supabase_admin.table("users").select("id, full_name, email, dob, loan_settled_on, total_points, deleted_at")

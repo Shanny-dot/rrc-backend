@@ -305,7 +305,9 @@ def social_login(request: Request, creds: SocialLoginRequest):
 
         try:
             apple_sub = claims["sub"]
-            apple_email = claims.get("email") or f"apple_{apple_sub[:8]}@privaterelay.appleid.com"
+            # No email shared: a placeholder from the WHOLE Apple user id (a shortened one could be
+            # shared by two different people and put them in the same account)
+            apple_email = claims.get("email") or f"apple_{apple_sub.replace('.', '_')}@privaterelay.appleid.com"
             apple_email = apple_email.strip().lower()
 
             user_db = supabase_admin.table("users").select("id").eq("email", apple_email).execute()

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
 from slowapi import Limiter
 from app.core.client_ip import client_ip
+from app.core import send_limits
 from app.core.supabase_client import supabase_admin
 from app.core.auth_middleware import get_current_user
 from app.schemas.referral import ReferralCreate, ReferralInDB, REFERRAL_CHANNELS
@@ -88,6 +89,11 @@ def create_referral(referral: ReferralCreate, current_user: dict = Depends(get_c
     # instead when invite_emailed is false (email not set up yet).
     emailed = False
     if email and channel not in _SELF_SENT:
+        try:
+            send_limits.use(user_id, "referral_invites")
+        except HTTPException:
+            # Past today's cap: the referral is still saved; the app offers the member's own mail app instead
+            return {**resp.data[0], "invite_emailed": False}
         emailed = EmailService.send_referral_invite(
             to_email=email,
             inviter_name=inviter.get("full_name") or "A friend",

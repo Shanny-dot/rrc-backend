@@ -22,6 +22,36 @@ def test_sign_up_check_cannot_sign_in_to_a_verified_account(env):
         member["mobile_verified_at"], member["email_verified_at"] = saved
 
 
+def test_invitation_emails_are_capped_per_member(env):
+    from app.core import send_limits
+    send_limits.reset_all()
+    c = env["c"]
+    event = "11111111-0000-4000-8000-000000000001"
+    guests = lambda n, tag: [{"guest_name": f"G{tag}{i}", "guest_email": f"g{tag}{i}@example.com"} for i in range(n)]  # noqa: E731
+    assert c.post(f"/api/v1/events/{event}/invite-guests", headers=env["member"], json=guests(11, "x")).status_code == 400
+    for batch in range(3):
+        assert c.post(f"/api/v1/events/{event}/invite-guests", headers=env["member"], json=guests(10, batch)).status_code == 200
+    r = c.post(f"/api/v1/events/{event}/invite-guests", headers=env["member"], json=guests(1, "y"))
+    assert r.status_code == 429 and "tomorrow" in r.json()["detail"]
+    # Referral invitations: past the cap the referral is still saved, just not emailed by us
+    send_limits.LIMITS["referral_invites"], saved = 1, send_limits.LIMITS["referral_invites"]
+    try:
+        body = lambda n: {"referred_name": f"Friend {n}", "referred_email": f"friend{n}@example.com",  # noqa: E731
+                          "channel": "email", "consent_given": True}
+        assert c.post("/api/v1/referrals/", headers=env["old"], json=body(1)).status_code == 200
+        r = c.post("/api/v1/referrals/", headers=env["old"], json=body(2))
+        assert r.status_code == 200 and r.json()["invite_emailed"] is False
+    finally:
+        send_limits.LIMITS["referral_invites"] = saved
+        send_limits.reset_all()
+
+
+def test_job_key_is_checked(env):
+    c = env["c"]
+    assert c.post("/api/v1/jobs/daily", headers={"X-Job-Key": "wrong"}).status_code == 403
+    assert c.post("/api/v1/jobs/daily").status_code == 403
+
+
 def test_verification_codes_cannot_be_guessed(env):
     from app.api.routes.auth import limiter
     from app.services import sms_service
