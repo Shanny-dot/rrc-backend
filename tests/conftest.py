@@ -30,7 +30,10 @@ COLUMNS = {
               "profile_complete", "referral_code", "referred_by", "is_admin", "fcm_token", "created_at", "deleted_at",
               "loan_settled_on", "notification_prefs",
               "mobile_verified_at", "email_verified_at", "welcomed_at", "signup_method",  # 010
-              "signup_code"],  # 011
+              "signup_code",  # 011
+              "admin_role", "signed_out_at"],  # 015
+    "audit_log": ["id", "at", "kind", "action", "actor_id", "actor_email", "actor_role", "target", "details",
+                  "status", "ip", "user_agent"],  # 015
     "events": ["id", "title", "description", "location", "event_date", "image_url", "points_for_attending",
                "points_for_referring", "capacity", "is_active", "created_at", "category", "thank_you_sent_at",
                "points_for_attending_max", "points_for_referring_max",  # 008
@@ -139,7 +142,7 @@ def seed(db):
         {"key": "reward_delivery_default", "value": "Emailed within 5 business days"},
         {"key": "min_app_version", "value": "3.0.0"}, {"key": "latest_app_version", "value": "3.1.0"},
     ]
-    t["wishlist"], t["event_rsvps"], t["event_guests"] = [], [], []
+    t["wishlist"], t["event_rsvps"], t["event_guests"], t["audit_log"] = [], [], [], []
 
 
 def admin_session(db, aal):

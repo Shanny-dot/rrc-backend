@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from typing import List
 from app.core.supabase_client import supabase_admin
 from app.core.auth_middleware import get_current_admin
@@ -11,6 +11,7 @@ from app.services import notify_service
 from app.schemas.referral import ReferralStageUpdate
 from app.services.program_service import get_int_setting, redemption_templates, REDEMPTION_STATUSES, event_when, _parse_ts
 from app.services import redemption_service
+from app.services import audit_service
 import datetime
 import json
 import os
@@ -120,8 +121,9 @@ def update_user_profile(id: str, data: dict = Body(...), admin: dict = Depends(g
 
 
 @router.put("/users/{id}/points")
-def update_user_points(id: str, new_points: int = Body(..., embed=True), reason: str = Body("Admin adjustment", embed=True), admin: dict = Depends(get_current_admin)):
-    user_resp = supabase_admin.table("users").select("total_points").eq("id", id).execute()
+def update_user_points(request: Request, id: str, new_points: int = Body(..., embed=True),
+                       reason: str = Body("Admin adjustment", embed=True), admin: dict = Depends(get_current_admin)):
+    user_resp = supabase_admin.table("users").select("total_points, full_name, email").eq("id", id).execute()
     if not user_resp.data:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -131,6 +133,15 @@ def update_user_points(id: str, new_points: int = Body(..., embed=True), reason:
     # Balance and ledger row (signed amount, shown in the member's Recent Activity) in one step
     PointsService.set_points(id, new_points, (reason or "Admin adjustment").strip())
     resp = supabase_admin.table("users").select("*").eq("id", id).execute()
+    member = user_resp.data[0]
+    request.state.audit_extra = {"member": member.get("full_name") or member.get("email"),
+                                 "points_before": current_points, "points_after": new_points}
+    if abs(diff) >= (get_int_setting("security_alert_points") or 1000):
+        audit_service.alert("Large points change", [
+            ("Member", f"{member.get('full_name') or ''} ({member.get('email') or id})"),
+            ("Change", f"{diff:+,} points ({current_points:,} to {new_points:,})"),
+            ("Reason", reason), ("Changed by", f"{admin.get('email')} ({admin.get('admin_role')})"),
+        ], "If this wasn't expected, check the member's points and the Activity log.", key=id)
 
     if diff != 0:
         if diff > 0:

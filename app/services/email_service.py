@@ -511,6 +511,47 @@ class EmailService:
                         attachments=[att])
 
     @staticmethod
+    def send_new_sign_in(to_email: str, full_name: str, when: str, how: str) -> bool:
+        """Sent whenever someone signs in to the member's account (not on the app's automatic renewals)."""
+        body = f"""
+        <p>Hi {_esc(_first(full_name))},</p>
+        <p>Someone just signed in to your {_esc(settings.FROM_NAME)} account.</p>
+        {_box([("When", when), ("How", how)])}
+        <p>If this was you, there's nothing to do.</p>
+        <p><strong>If it wasn't you</strong>, please reset your password straight away with "Forgot password" in the
+        app and let us know, so we can secure your account.</p>
+        """
+        return _deliver(to_email, "New sign-in to your account", _layout("New sign-in to your account", body))
+
+    @staticmethod
+    def send_staff_access(to_email: str, full_name: str, role_label: str, set_password_link: str = None) -> bool:
+        """Tells a person they've been given access to the admin website."""
+        steps = (f"<p>First, choose your password with the button below. Then sign in at "
+                 f"{_esc(_site('/login'))}.</p>" if set_password_link
+                 else f"<p>Sign in at {_esc(_site('/login'))} with your usual email and password.</p>")
+        body = f"""
+        <p>Hi {_esc(_first(full_name))},</p>
+        <p>You've been given access to the {_esc(settings.FROM_NAME)} admin website.</p>
+        {_box([("Access level", role_label)])}
+        {steps}
+        <p>When you first sign in, you'll be asked to link an authenticator app on your phone (Google
+        Authenticator or Microsoft Authenticator). After that, sign-in needs your password and the 6-digit
+        code from the app.</p>
+        """
+        return _deliver(to_email, "Your admin website access", _layout("Your admin website access", body,
+                                                                       ("Choose your password", set_password_link)))
+
+    @staticmethod
+    def send_security_alert(to_email: str, subject: str, rows: list, note: str = "") -> bool:
+        """Security alert to the business (unusual sign-in activity, big points changes, staff access changes)."""
+        body = f"""
+        {_box(rows)}
+        {_paragraphs(note)}
+        <p style="color:#777;font-size:13px">Full details are in the admin website's Activity log.</p>
+        """
+        return _deliver(to_email, f"Security alert: {subject}", _layout(_esc(subject), body))
+
+    @staticmethod
     def send_staff_feedback(to_email: str, member: dict, feedback: dict):
         name = html.escape(member.get("full_name") or "A member")
         contact = html.escape(" · ".join(v for v in (member.get("email"), member.get("mobile")) if v))

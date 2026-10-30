@@ -57,6 +57,19 @@ class Query:
         self.filters.append(lambda r, k=k, v=v: r.get(k) is not None and str(r.get(k)) < str(v))
         return self
 
+    def gte(self, k, v):
+        self.filters.append(lambda r, k=k, v=v: r.get(k) is not None and str(r.get(k)) >= str(v))
+        return self
+
+    def lte(self, k, v):
+        self.filters.append(lambda r, k=k, v=v: r.get(k) is not None and str(r.get(k)) <= str(v))
+        return self
+
+    def ilike(self, k, pattern):
+        part = pattern.strip("%").lower()
+        self.filters.append(lambda r, k=k: part in str(r.get(k) or "").lower())
+        return self
+
     def in_(self, k, values):
         vals = {str(v) for v in values}
         self.filters.append(lambda r, k=k: str(r.get(k)) in vals)
@@ -114,7 +127,7 @@ class Query:
                         continue
                 item.setdefault("id", str(uuid.uuid4()))
                 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                for ts in ("created_at", "rsvp_at", "requested_at"):
+                for ts in ("created_at", "rsvp_at", "requested_at", "at"):
                     if ts in self.db.columns.get(self.table, ()):
                         item.setdefault(ts, now)
                 for col, default in self.db.defaults.get(self.table, {}).items():
@@ -188,9 +201,23 @@ class FakeAuth:
 
 
 
+class _FakeMfaAdmin:
+    """Authenticator-app links per auth user: factors = {user_id: [factor id, ...]}."""
+
+    def __init__(self):
+        self.factors = {}
+
+    def list_factors(self, params):
+        return _Obj(factors=[_Obj(id=f, status="verified") for f in self.factors.get(params["user_id"], [])])
+
+    def delete_factor(self, params):
+        self.factors[params["user_id"]] = [f for f in self.factors.get(params["user_id"], []) if f != params["id"]]
+
+
 class _FakeAuthAdmin:
     def __init__(self, auth):
         self.auth = auth
+        self.mfa = _FakeMfaAdmin()
 
     def create_user(self, attrs):
         email = attrs["email"].strip().lower()

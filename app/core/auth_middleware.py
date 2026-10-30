@@ -1,7 +1,8 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 import time
+from app.core import permissions
 from app.core.config import settings
 from app.core.supabase_client import supabase_admin, supabase_anon
 
@@ -40,14 +41,17 @@ def issue_app_token(user_id: str, email: str = None) -> str:
     )
 
 
-def _is_deleted(user_id: str) -> bool:
-    """True when staff have deleted this member (soft delete) or the profile row is gone."""
+def _member_row(user_id: str):
     try:
         resp = supabase_admin.table("users").select("*").eq("id", user_id).execute()
-        row = resp.data[0] if resp.data else None
+        return resp.data[0] if resp.data else None
     except Exception as e:
-        print("Deleted-user check failed:", e)
-        row = None
+        print("Member lookup failed:", e)
+        return None
+
+
+def _is_deleted(user_id: str, row: dict = None) -> bool:
+    """True when the account is closed (soft delete)."""
     if row and row.get("deleted_at"):
         return True
     # Legacy: deletions recorded only in deleted_users.json before the DB column was used
@@ -55,13 +59,25 @@ def _is_deleted(user_id: str) -> bool:
     return user_id in load_deleted_users_map()
 
 
-def _session_aal(token: str) -> str:
-    """'aal2' when the Supabase session was confirmed with a two-step (authenticator app) code.
-    Read only after Supabase has accepted the token, so the signature is already checked."""
+def _signed_out(row: dict, issued_at) -> bool:
+    """True when the token was issued before the member (or staff) signed out of every device."""
+    cutoff = (row or {}).get("signed_out_at")
+    if not cutoff or not issued_at:
+        return False
     try:
-        return jwt.decode(token, options={"verify_signature": False}).get("aal") or ""
+        import datetime
+        cut = datetime.datetime.fromisoformat(str(cutoff).replace("Z", "+00:00"))
+        return int(issued_at) < int(cut.timestamp())
     except Exception:
-        return ""
+        return False
+
+
+def _claims(token: str) -> dict:
+    """The token's claims. Read only after the token has been accepted, so the signature is already checked."""
+    try:
+        return jwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return {}
 
 
 def _authenticate(token: str) -> dict:
@@ -69,20 +85,23 @@ def _authenticate(token: str) -> dict:
     try:
         user_response = supabase_anon.auth.get_user(token)
         if user_response and user_response.user:
+            claims = _claims(token)
+            # aal2 = the session was confirmed with a two-step (authenticator app) code
             return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated",
                     "user_metadata": getattr(user_response.user, "user_metadata", None) or {},
-                    "aal": _session_aal(token)}
+                    "aal": claims.get("aal") or "", "iat": claims.get("iat")}
     except Exception:
         pass
 
-    # 2. Backend-issued tokens (Apple Sign-In fallback), signed with JWT_SECRET from the environment
+    # 2. Backend-issued tokens (the app's long-lived sign-in), signed with JWT_SECRET from the environment
     if APP_TOKENS_ENABLED:
         try:
             payload = jwt.decode(
                 token, _secret, algorithms=["HS256"], issuer=APP_TOKEN_ISSUER,
                 options={"require": ["exp", "sub", "iss"]},
             )
-            return {"sub": payload["sub"], "email": payload.get("email"), "role": "authenticated"}
+            return {"sub": payload["sub"], "email": payload.get("email"), "role": "authenticated",
+                    "iat": payload.get("iat")}
         except Exception:
             pass
 
@@ -95,16 +114,37 @@ def _authenticate(token: str) -> dict:
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     user = _authenticate(credentials.credentials)
-    if _is_deleted(user["sub"]):
+    row = _member_row(user["sub"])
+    if _is_deleted(user["sub"], row):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="This account has been deleted.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if _signed_out(row, user.get("iat")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="You've been signed out. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user["profile"] = row or {}
     return user
 
 
-def get_current_admin(current_user: dict = Depends(get_current_user)):
+def _route_template(request: Request) -> str:
+    """The full route path with its parameters as placeholders, e.g. /api/v1/admin/users/{id}/points.
+    Rebuilt from the request (some FastAPI versions keep only the router-relative path on the route)."""
+    from urllib.parse import unquote
+    segments = request.url.path.rstrip("/").split("/")
+    for name, value in (request.path_params or {}).items():
+        for i in range(len(segments) - 1, -1, -1):
+            if unquote(segments[i]) == str(value):
+                segments[i] = "{" + name + "}"
+                break
+    return "/".join(segments)
+
+
+def get_current_admin(request: Request, current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("sub")
     if not user_id:
         raise HTTPException(
@@ -113,8 +153,8 @@ def get_current_admin(current_user: dict = Depends(get_current_user)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    resp = supabase_admin.table("users").select("is_admin").eq("id", user_id).execute()
-    if not resp.data or not resp.data[0].get("is_admin"):
+    row = current_user.get("profile") or {}
+    if not row.get("is_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions. Admin access required.",
@@ -128,4 +168,17 @@ def get_current_admin(current_user: dict = Depends(get_current_user)):
             detail="two_step_required: please sign in again and enter the code from your authenticator app.",
         )
 
-    return current_user
+    # What this staff member's access level allows (app/core/permissions.py)
+    role = permissions.role_of(row)
+    rule = permissions.ROUTES.get((request.method, _route_template(request)))
+    if not rule or not permissions.can(role, rule[0]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your access level doesn't allow this. Please ask the account owner.",
+        )
+
+    admin = {**current_user, "admin_role": role, "email": current_user.get("email") or row.get("email")}
+    # Picked up by the activity-log middleware once the response is ready
+    request.state.audit_actor = admin
+    request.state.audit_action = rule[1]
+    return admin

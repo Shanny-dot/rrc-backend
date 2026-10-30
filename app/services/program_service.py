@@ -61,6 +61,10 @@ SETTING_DEFAULTS = {
     "contact_card_title": "Contact us",
     "tiers_intro": "",
     "redemption_statuses": json.dumps(REDEMPTION_STATUS_DEFAULTS),
+    # Security alerts: a staff points change of at least this many points (up or down) is emailed
+    # to security_alert_email (empty = ADMIN_EMAIL).
+    "security_alert_points": "1000",
+    "security_alert_email": "",
 }
 
 # Points that count towards "lifetime earned": everything except redemptions and their refunds.

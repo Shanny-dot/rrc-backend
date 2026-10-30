@@ -37,17 +37,24 @@ def check_login_allowed(email: str) -> None:
             f"{'s' if minutes != 1 else ''} and try again, or use Forgot password."))
 
 
-def record_login_failure(email: str) -> None:
+def record_login_failure(email: str) -> int:
+    """Returns the lock number when this failure locks the account (1, 2, ...), else 0."""
     key, now = _key(email), time.time()
+    locked = 0
     with _lock:
         recent = [t for t in _fails.get(key, []) if now - t < FAIL_WINDOW] + [now]
         if len(recent) >= FAILS_BEFORE_LOCK:
-            count = _lock_count.get(key, 0) + 1
-            _lock_count[key] = count
-            _locked_until[key] = now + min(LOCK_SECONDS * 2 ** (count - 1), MAX_LOCK)
+            locked = _lock_count.get(key, 0) + 1
+            _lock_count[key] = locked
+            _locked_until[key] = now + min(LOCK_SECONDS * 2 ** (locked - 1), MAX_LOCK)
             recent = []
-            print(f"Security: sign-in locked for an account after {FAILS_BEFORE_LOCK} failed attempts (lock #{count})")
+            print(f"Security: sign-in locked for an account after {FAILS_BEFORE_LOCK} failed attempts (lock #{locked})")
         _fails[key] = recent
+    return locked
+
+
+def lock_minutes(lock_number: int) -> int:
+    return min(LOCK_SECONDS * 2 ** (lock_number - 1), MAX_LOCK) // 60
 
 
 def record_login_success(email: str) -> None:

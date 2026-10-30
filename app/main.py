@@ -5,7 +5,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
-from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback, broker, jobs
+from app.core.activity_middleware import ActivityLogMiddleware
+from app.api.routes import auth, events, rewards, referrals, transactions, admin, content, tiers, notifications, app_config, feedback, broker, jobs, staff
 
 app = FastAPI(title="RRC Backend API", docs_url=None, redoc_url=None, openapi_url=None)
 app.state.limiter = auth.limiter
@@ -51,6 +52,10 @@ app.add_middleware(
 )
 
 
+# Every change made on the admin site goes into the activity log (who, what, when, from where).
+app.add_middleware(ActivityLogMiddleware)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -69,6 +74,7 @@ app.include_router(events.router, prefix="/api/v1/events", tags=["Events"])
 app.include_router(rewards.router, prefix="/api/v1/rewards", tags=["Rewards"])
 app.include_router(transactions.router, prefix="/api/v1/transactions", tags=["Transactions"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(staff.router, prefix="/api/v1/admin", tags=["Admin"])
 app.include_router(content.router, prefix="/api/v1/content", tags=["Content"])
 app.include_router(tiers.router, prefix="/api/v1/tiers", tags=["tiers"])
 app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])

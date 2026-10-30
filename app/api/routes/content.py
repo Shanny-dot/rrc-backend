@@ -67,6 +67,8 @@ DEFAULT_LABELS = {
     "terms_url": "Program terms link",
     "privacy_url": "Privacy policy link",
     "help_faq": "Help page questions and answers (JSON)",
+    "security_alert_email": "Security alerts: send to (empty = the staff email)",
+    "security_alert_points": "Security alerts: points change that triggers an alert",
 }
 
 @router.get("")
@@ -76,7 +78,8 @@ def get_all_content():
         resp = supabase_admin.table("app_content").select("key,value").execute()
         if resp.data:
             result = dict(DEFAULTS)
-            result.update({row["key"]: row["value"] for row in resp.data})
+            # Security settings (alert email and threshold) are for staff only
+            result.update({row["key"]: row["value"] for row in resp.data if not row["key"].startswith("security_")})
             return result
     except Exception as e:
         print(f"Content fetch warning: {e}")

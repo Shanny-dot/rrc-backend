@@ -18,6 +18,7 @@ from app.services.points_service import PointsService
 from app.services.sms_service import SmsService, format_mobile, issue_code, code_matches
 from app.services.invite_service import link_new_member, is_launch_code, clean_code
 from app.services.notify_service import PREF_KEYS, prefs_for
+from app.services import audit_service
 import random
 import string
 import time
@@ -214,6 +215,8 @@ def _sign_in_social_member(email: str, full_name: str, provider: str, referral_c
         if existing.data[0].get("deleted_at"):
             raise HTTPException(status_code=403, detail="This account has been deleted.")
         user_id = existing.data[0]["id"]
+        _tell_member_new_sign_in(user_id, {"google": "Google", "facebook": "Facebook", "apple": "Apple"}
+                                 .get(provider, str(provider).capitalize()))
     else:
         user_id = str(uuid.uuid4())
         code = generate_referral_code()
@@ -716,16 +719,51 @@ def login(request: Request, creds: LoginCredentials):
         if not auth_response.session:
              raise Exception("Invalid credentials")
     except Exception:
-        login_guard.record_login_failure(clean_email)
+        lock = login_guard.record_login_failure(clean_email)
+        if lock:
+            _sign_in_locked(request, clean_email, lock)
         raise HTTPException(status_code=400, detail="Invalid login credentials")
     login_guard.record_login_success(clean_email)
 
     user = auth_response.user or auth_response.session.user
     meta = getattr(user, "user_metadata", None) or {}
     member_id = _ensure_profile(str(user.id), user.email or clean_email, meta.get("full_name", ""))
+    _tell_member_new_sign_in(member_id, "Email and password")
     # A long-lived backend token (also for the profile's own id), so members stay signed in:
     # Supabase's session token expires after an hour and the app has no way to renew it.
     return TokenResponse(access_token=issue_app_token(member_id, user.email or clean_email))
+
+
+def _sign_in_locked(request: Request, email: str, lock: int) -> None:
+    """Repeated wrong passwords: logged, and the business is alerted (at most hourly per account)."""
+    minutes = login_guard.lock_minutes(lock)
+    audit_service.security("Sign-in locked after repeated wrong passwords", target=email,
+                           details={"lock_number": lock, "locked_minutes": minutes}, ip=client_ip(request))
+    audit_service.alert("Repeated wrong passwords", [
+        ("Account", email), ("Locked for", f"{minutes} minutes"), ("Times locked in a row", lock),
+        ("From internet address", client_ip(request)),
+    ], "Someone may be trying to guess this password. If it keeps happening, consider signing the "
+       "account out of all devices and asking the member to change their password.", key=email)
+
+
+def _tell_member_new_sign_in(member_id: str, how: str) -> None:
+    """'New sign-in to your account' email (fresh sign-ins only, not the app's automatic renewals)."""
+    try:
+        rows = supabase_admin.table("users").select("email, full_name").eq("id", member_id).execute().data or []
+        if rows and rows[0].get("email"):
+            EmailService.send_new_sign_in(rows[0]["email"], rows[0].get("full_name"),
+                                          audit_service.sydney_now_text(), f"{how}, Reliiance Rewards app")
+    except Exception as e:
+        print(f"New sign-in email skipped: {e}")
+
+
+@router.post("/sign-out-everywhere", response_model=TokenResponse)
+def sign_out_everywhere(request: Request, current_user: dict = Depends(get_current_user)):
+    """Signs the member out on every other phone. Returns a fresh token so this phone stays signed in."""
+    supabase_admin.table("users").update({"signed_out_at": _now_iso()}).eq("id", current_user["sub"]).execute()
+    audit_service.security("Member signed out of all devices", target=current_user.get("email"),
+                           ip=client_ip(request), actor=current_user)
+    return TokenResponse(access_token=issue_app_token(current_user["sub"], current_user.get("email")))
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -852,6 +890,7 @@ def delete_account(current_user: dict = Depends(get_current_user)):
         # Closed, not erased: the member can no longer sign in or get messages, but their profile,
         # points and history stay so staff can restore the account (Deleted users > Restore).
         supabase_admin.table("users").update({"deleted_at": _now_iso(), "fcm_token": None}).eq("id", user_id).execute()
+        audit_service.security("Member closed their account in the app", target=member.get("email"), actor=current_user)
         if member.get("email"):
             EmailService.send_account_deleted(member["email"], member.get("full_name"))
         return {"success": True, "message": "Account deleted successfully"}
