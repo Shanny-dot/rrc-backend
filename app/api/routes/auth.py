@@ -653,6 +653,11 @@ def verify_signup(request: Request, req: VerifySignupRequest):
     row = _member_by_email(req.email)
     if not row:
         raise HTTPException(status_code=404, detail="No account found for this email address")
+    # Signs the member in only by confirming a code now. An account that's already verified has
+    # nothing to confirm, so it must sign in normally (otherwise its email alone would sign in).
+    if row.get("mobile_verified_at") and row.get("email_verified_at"):
+        raise HTTPException(status_code=400, detail="This account is already verified. Please sign in with your "
+                                                    "email and password.")
     _check_codes(row, req.mobile_code, req.email_code)
     points = _finish_signup_if_verified(row["id"])
     return {"success": True, "access_token": issue_app_token(row["id"], row.get("email")), "points_added": points or 0}
