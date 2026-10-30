@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import threading
 import time
 import httpx
 from app.core.config import settings
@@ -41,11 +42,39 @@ def issue_code(subject: str) -> str:
     return _otp_for_window(subject, int(time.time()) // OTP_WINDOW_SECONDS)
 
 
+# Guessing: after MAX_CODE_FAILS wrong codes for one mobile / email within CODE_FAIL_WINDOW,
+# every code for it is refused until the window has passed (even from other internet
+# addresses), so a 6-digit code can't be found by trying many.
+MAX_CODE_FAILS = 5
+CODE_FAIL_WINDOW = 15 * 60
+_code_lock = threading.Lock()
+_code_fails: dict = {}
+
+
 def code_matches(subject: str, code: str, windows: int = 2) -> bool:
     """True if code was issued for subject in the current window or the (windows - 1) before it."""
     code = (code or "").strip()
-    current = int(time.time()) // OTP_WINDOW_SECONDS
-    return any(hmac.compare_digest(_otp_for_window(subject, current - i), code) for i in range(windows))
+    now = time.time()
+    with _code_lock:
+        recent = [t for t in _code_fails.get(subject, []) if now - t < CODE_FAIL_WINDOW]
+        _code_fails[subject] = recent
+        if len(recent) >= MAX_CODE_FAILS:
+            print(f"Security: verification codes blocked for a mobile/email after {MAX_CODE_FAILS} wrong codes")
+            return False
+    current = int(now) // OTP_WINDOW_SECONDS
+    ok = any(hmac.compare_digest(_otp_for_window(subject, current - i), code) for i in range(windows))
+    with _code_lock:
+        if ok:
+            _code_fails.pop(subject, None)
+        else:
+            _code_fails.setdefault(subject, []).append(now)
+    return ok
+
+
+def reset_code_attempts() -> None:
+    """Tests only."""
+    with _code_lock:
+        _code_fails.clear()
 
 
 class SmsService:
