@@ -57,3 +57,17 @@ def test_backup_restore_has_what_the_tables_need_and_logs_no_data():
     # The logs of a public repository can be read by anyone
     for leak in ("cat restore.log", "cat out/row-counts.tsv", "$expected rows", "total matches: $points"):
         assert leak not in text
+
+
+def test_the_name_is_always_spelled_reliiance():
+    """Emails, reports and pages come from app/. (The lower-case word stays in the common-password list.)"""
+    root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "app")
+    wrong = []
+    for folder, _, files in os.walk(root):
+        for name in files:
+            if name.endswith(".py"):
+                with open(os.path.join(folder, name), encoding="utf-8") as f:
+                    text = f.read()
+                if any(word in text for word in ("Reliance", "RELIANCE", "Repliance", "REPLIANCE")):
+                    wrong.append(name)
+    assert not wrong

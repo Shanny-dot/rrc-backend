@@ -48,7 +48,7 @@ CREATE POLICY "loan_reviews_service_all" ON loan_reviews FOR ALL USING (auth.rol
 -- ── Event thank-you emails ────────────────────────────────────────────────
 ALTER TABLE events ADD COLUMN IF NOT EXISTS thank_you_sent_at TIMESTAMP WITH TIME ZONE;
 
--- ── Program settings (0 = off until Reliance decides) ─────────────────────
+-- ── Program settings (0 = off until Reliiance decides) ─────────────────────
 INSERT INTO app_content (key, value, label) VALUES
   ('points_expiry_months', '0', 'Points expire this many months after they''re earned (0 = never)'),
   ('bonus_birthday_points', '0', 'Birthday bonus points (0 = off)'),

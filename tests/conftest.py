@@ -138,7 +138,7 @@ def seed(db):
     ]
     t["app_content"] = [
         {"key": "referral_points", "value": "500"}, {"key": "tier_basis", "value": "lifetime"},
-        {"key": "invite_link", "value": "https://reliance.example/join"},
+        {"key": "invite_link", "value": "https://reliiance.example/join"},
         {"key": "reward_delivery_default", "value": "Emailed within 5 business days"},
         {"key": "min_app_version", "value": "3.0.0"}, {"key": "latest_app_version", "value": "3.1.0"},
     ]

@@ -46,7 +46,7 @@ DROP POLICY IF EXISTS "wishlist_service_all" ON wishlist;
 CREATE POLICY "wishlist_service_all" ON wishlist FOR ALL USING (auth.role() = 'service_role');
 
 -- ── Tiers ─────────────────────────────────────────────────────────────────
--- PLACEHOLDER thresholds and benefits until Reliance confirms them.
+-- PLACEHOLDER thresholds and benefits until Reliiance confirms them.
 -- Edit these rows in Supabase; the app reads them live, no release needed.
 CREATE TABLE IF NOT EXISTS tiers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
