@@ -9,6 +9,10 @@ name: Nightly backup and restore test
 # A failed run is emailed by GitHub to whoever enabled the schedule.
 # Recovery steps: docs/DISASTER_RECOVERY.md.
 #
+# The logs of a public repository can be read by anyone, so this workflow must never print
+# table rows or restore messages (a failed restore can quote a row). It reports table names
+# and pass/fail only. GitHub also pauses schedules after 60 days without repository activity.
+#
 # Repository secrets needed (Settings > Secrets and variables > Actions):
 #   BACKUP_DATABASE_URL   Supabase > Connect > "Session pooler" connection string, with the DB password
 #   BACKUP_PASSPHRASE     a long random passphrase, also kept in the business password manager
@@ -60,7 +64,6 @@ jobs:
           psql "$DB_URL" -At -c "select string_agg(format('select %L as t, count(*) as n from public.%I', tablename, tablename), ' union all ' order by tablename) from pg_tables where schemaname = 'public'" > /tmp/q.sql
           psql "$DB_URL" -At -F $'\t' -f /tmp/q.sql > out/row-counts.tsv
           psql "$DB_URL" -At -c "select coalesce(sum(total_points), 0) from public.users" > out/points-total.txt
-          cat out/row-counts.tsv
 
       - name: Download uploaded images
         run: |
@@ -116,29 +119,41 @@ jobs:
 
       - name: Restore into a throwaway database
         run: |
-          # Supabase's own roles and auth helpers that our tables' rules refer to
+          # What our tables rely on from Supabase: its roles, its auth helpers (table rules) and
+          # uuid_generate_v4() in the extensions schema (the default id of nearly every table)
           psql "$TEST_DB" -v ON_ERROR_STOP=1 <<'SQL'
           create role anon nologin; create role authenticated nologin; create role service_role nologin;
           create schema auth;
           create function auth.role() returns text language sql as $$ select 'service_role' $$;
           create function auth.uid() returns uuid language sql as $$ select null::uuid $$;
+          create schema extensions;
+          create extension "uuid-ossp" schema extensions;
+          create extension pgcrypto schema extensions;
           SQL
+          # Only the number of messages: they can quote table rows, and these logs may be public
           pg_restore --no-owner --no-privileges -n public -d "$TEST_DB" database.dump 2> restore.log || true
-          echo "Restore messages:"; cat restore.log
+          echo "Restore finished with $(grep -c 'pg_restore: error' restore.log) error message(s)"
 
       - name: Check every table came back complete
         run: |
           fail=0
           {
             echo "### Restore test of ${{ needs.backup.outputs.name }}"
-            echo "| Table | In backup | Restored |"; echo "|---|---|---|"
+            echo "| Table | All rows restored |"; echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           while IFS=$'\t' read -r table expected; do
             got=$(psql "$TEST_DB" -At -c "select count(*) from public.\"$table\"" 2>/dev/null || echo "missing")
-            echo "| $table | $expected | $got |" >> "$GITHUB_STEP_SUMMARY"
-            [ "$got" = "$expected" ] || { echo "::error::$table: expected $expected rows, restored $got"; fail=1; }
+            if [ "$got" = "$expected" ]; then
+              echo "| $table | yes |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $table | NO |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::$table did not come back complete"; fail=1
+            fi
           done < row-counts.tsv
-          points=$(psql "$TEST_DB" -At -c "select coalesce(sum(total_points), 0) from public.users")
-          [ "$points" = "$(cat points-total.txt)" ] || { echo "::error::points total differs: $points vs $(cat points-total.txt)"; fail=1; }
-          echo "Members' points total matches: $points" >> "$GITHUB_STEP_SUMMARY"
+          points=$(psql "$TEST_DB" -At -c "select coalesce(sum(total_points), 0) from public.users" 2>/dev/null || echo "missing")
+          if [ "$points" = "$(cat points-total.txt)" ]; then
+            echo "Members' points total matches" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Members' points total differs after restore"; fail=1
+          fi
           exit $fail

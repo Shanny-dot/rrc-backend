@@ -46,3 +46,14 @@ def test_workflows_are_valid_yaml():
         with open(os.path.join(root, name), encoding="utf-8") as f:
             wf = yaml.safe_load(f)
         assert wf["jobs"] and (wf.get("on") or wf.get(True))
+
+
+def test_backup_restore_has_what_the_tables_need_and_logs_no_data():
+    root = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".github", "workflows")
+    with open(os.path.join(root, "nightly-backup.yml"), encoding="utf-8") as f:
+        text = f.read()
+    # Nearly every table's id defaults to extensions.uuid_generate_v4()
+    assert 'create extension "uuid-ossp" schema extensions' in text
+    # The logs of a public repository can be read by anyone
+    for leak in ("cat restore.log", "cat out/row-counts.tsv", "$expected rows", "total matches: $points"):
+        assert leak not in text
