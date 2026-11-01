@@ -208,7 +208,8 @@ class _FakeMfaAdmin:
         self.factors = {}
 
     def list_factors(self, params):
-        return _Obj(factors=[_Obj(id=f, status="verified") for f in self.factors.get(params["user_id"], [])])
+        # A plain list, as the real supabase_auth library returns
+        return [_Obj(id=f, status="verified") for f in self.factors.get(params["user_id"], [])]
 
     def delete_factor(self, params):
         self.factors[params["user_id"]] = [f for f in self.factors.get(params["user_id"], []) if f != params["id"]]

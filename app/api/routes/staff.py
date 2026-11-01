@@ -25,8 +25,8 @@ def _now_iso() -> str:
 def _two_step_factors(user_id: str):
     """The staff member's authenticator-app links, or None if Supabase can't be asked."""
     try:
-        resp = supabase_admin.auth.admin.mfa.list_factors({"user_id": user_id})
-        return [f for f in (getattr(resp, "factors", None) or []) if getattr(f, "status", "") == "verified"]
+        factors = supabase_admin.auth.admin.mfa.list_factors({"user_id": user_id})
+        return [f for f in factors if f.status == "verified"]
     except Exception as e:
         print(f"Two-step factor lookup failed: {e}")
         return None

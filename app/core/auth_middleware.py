@@ -59,17 +59,24 @@ def _is_deleted(user_id: str, row: dict = None) -> bool:
     return user_id in load_deleted_users_map()
 
 
-def _signed_out(row: dict, issued_at) -> bool:
-    """True when the token was issued before the member (or staff) signed out of every device."""
+def _signed_out(row: dict, signed_in_at) -> bool:
+    """True when this session began before the member (or staff) signed out of every device."""
     cutoff = (row or {}).get("signed_out_at")
-    if not cutoff or not issued_at:
+    if not cutoff or not signed_in_at:
         return False
     try:
         import datetime
         cut = datetime.datetime.fromisoformat(str(cutoff).replace("Z", "+00:00"))
-        return int(issued_at) < int(cut.timestamp())
+        return int(signed_in_at) < int(cut.timestamp())
     except Exception:
         return False
+
+
+def _signed_in_at(claims: dict):
+    """When a Supabase session really began. A renewed token has a new iat, so iat alone would let a
+    session outlive "sign out everywhere"; amr keeps the time of the password and two-step steps."""
+    times = [m.get("timestamp") for m in claims.get("amr") or [] if isinstance(m, dict) and m.get("timestamp")]
+    return max(times) if times else claims.get("iat")
 
 
 def _claims(token: str) -> dict:
@@ -89,7 +96,7 @@ def _authenticate(token: str) -> dict:
             # aal2 = the session was confirmed with a two-step (authenticator app) code
             return {"sub": user_response.user.id, "email": user_response.user.email, "role": "authenticated",
                     "user_metadata": getattr(user_response.user, "user_metadata", None) or {},
-                    "aal": claims.get("aal") or "", "iat": claims.get("iat")}
+                    "aal": claims.get("aal") or "", "iat": _signed_in_at(claims)}
     except Exception:
         pass
 

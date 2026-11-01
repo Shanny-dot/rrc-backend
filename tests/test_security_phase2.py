@@ -188,6 +188,19 @@ def test_new_sign_in_email_and_lockout_alert(env, mail):
     login_guard.reset_all(); limiter.reset()
 
 
+def test_renewing_a_session_does_not_outlive_sign_out_everywhere():
+    from app.core.auth_middleware import _signed_in_at, _signed_out
+    row = {"signed_out_at": "2026-11-01T10:00:00+00:00"}
+    cutoff = 1793527200  # the same moment
+    renewed = {"iat": cutoff + 600, "amr": [{"method": "password", "timestamp": cutoff - 500},
+                                            {"method": "totp", "timestamp": cutoff - 480}]}
+    assert _signed_in_at(renewed) == cutoff - 480 and _signed_out(row, _signed_in_at(renewed))
+    signed_in_again = {"iat": cutoff + 600, "amr": [{"method": "password", "timestamp": cutoff + 590}]}
+    assert not _signed_out(row, _signed_in_at(signed_in_again))
+    # No sign-in details on the token: falls back to when it was issued
+    assert _signed_in_at({"iat": cutoff + 5}) == cutoff + 5
+
+
 def test_sign_in_by_sms_code_sends_the_new_sign_in_email(env, mail):
     from app.api.routes.auth import limiter
     from app.services import sms_service
