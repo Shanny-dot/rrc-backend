@@ -188,6 +188,30 @@ def test_new_sign_in_email_and_lockout_alert(env, mail):
     login_guard.reset_all(); limiter.reset()
 
 
+def test_sign_in_by_sms_code_sends_the_new_sign_in_email(env, mail):
+    from app.api.routes.auth import limiter
+    from app.services import sms_service
+    db, c = env["db"], env["c"]
+    sms_service.reset_code_attempts(); limiter.reset()
+    member = next(u for u in db.tables["users"] if u["id"] == MEMBER_ID)
+    saved = (member.get("mobile"), member.get("mobile_verified_at"))
+    number = "+61491570159"
+    member["mobile"] = number
+    try:
+        # Still signing up: confirming the mobile for the first time isn't a sign-in
+        member["mobile_verified_at"] = None
+        assert c.post("/api/v1/auth/verify-mobile", json={"mobile": number, "code": sms_service.issue_code(number)}).status_code == 200
+        assert not [m for m in mail if m["subject"] == "New sign-in to your account"]
+        # Already verified: this is a sign-in, so the member is told
+        member["mobile_verified_at"] = "2026-10-01T00:00:00+00:00"
+        assert c.post("/api/v1/auth/verify-mobile", json={"mobile": number, "code": sms_service.issue_code(number)}).status_code == 200
+        mine = [m for m in mail if m["subject"] == "New sign-in to your account"]
+        assert mine and "SMS code" in mine[-1]["html"]
+    finally:
+        member["mobile"], member["mobile_verified_at"] = saved
+        sms_service.reset_code_attempts(); limiter.reset()
+
+
 def test_security_settings_are_not_public(env):
     db, c = env["db"], env["c"]
     db.tables["app_content"].append({"key": "security_alert_email", "value": "owner@rrc.com"})

@@ -115,6 +115,18 @@ Rehearse D on the staging project at least every 6 months (docs/STAGING.md).
 2. Activity log: filter by their email for the period; undo changes (scenario A).
 3. They reset their password before access is given again.
 
+If the **only** Owner who can sign in has lost their phone, nobody can use "Reset two-step". Keep
+two Owners so this doesn't happen. If it does, someone with Supabase access confirms the person's
+identity by phone or in person, then runs this in the SQL editor (replace the email):
+
+```sql
+delete from auth.mfa_factors where user_id = (select id from public.users where email = 'owner@example.com');
+update public.users set signed_out_at = now() where email = 'owner@example.com';
+```
+
+They set up the authenticator app again at their next sign-in. This step doesn't appear in the
+activity log, so keep a written note of who did it and why.
+
 ### G. Member reports their account was used by someone else
 1. Users > the member > "Sign out of all devices"; ask them to reset their password.
 2. Check their points history and redemptions; reverse anything they didn't do.

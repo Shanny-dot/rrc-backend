@@ -74,10 +74,8 @@ def get_user(id: str, admin: dict = Depends(get_current_admin)):
 @router.delete("/users/{id}")
 def delete_user(id: str, admin: dict = Depends(get_current_admin)):
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    try:
-        supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
-    except Exception as e:
-        print("DB deleted_at update note:", e)
+    # The database is the record: if this fails staff must see an error, not "deleted"
+    supabase_admin.table("users").update({"deleted_at": now_iso}).eq("id", id).execute()
 
     dmap = load_deleted_users_map()
     dmap[id] = now_iso
@@ -86,10 +84,8 @@ def delete_user(id: str, admin: dict = Depends(get_current_admin)):
 
 @router.post("/users/{id}/restore")
 def restore_user(id: str, admin: dict = Depends(get_current_admin)):
-    try:
-        supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
-    except Exception as e:
-        print("DB deleted_at restore note:", e)
+    # The database is the record: if this fails staff must see an error, not "restored"
+    supabase_admin.table("users").update({"deleted_at": None}).eq("id", id).execute()
 
     dmap = load_deleted_users_map()
     if id in dmap:

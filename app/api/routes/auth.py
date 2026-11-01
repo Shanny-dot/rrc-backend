@@ -570,6 +570,8 @@ def verify_mobile(request: Request, req: VerifyMobileRequest):
 
         if not user_row.get("mobile_verified_at"):
             supabase_admin.table("users").update({"mobile_verified_at": _now_iso()}).eq("id", user_row["id"]).execute()
+        else:  # Already verified, so this is a sign-in by SMS code rather than part of sign-up
+            _tell_member_new_sign_in(user_row["id"], "SMS code")
         _finish_signup_if_verified(user_row["id"])
         token = issue_app_token(user_row["id"], user_row.get("email"))
         return {"success": True, "message": "Mobile number verified", "access_token": token}
