@@ -69,6 +69,7 @@ DEFAULT_LABELS = {
     "help_faq": "Help page questions and answers (JSON)",
     "security_alert_email": "Security alerts: send to (empty = the staff email)",
     "security_alert_points": "Security alerts: points change that triggers an alert",
+    "event_self_checkin": "Event check-in: members can check themselves in (1 = yes, 0 = staff only)",
 }
 
 @router.get("")

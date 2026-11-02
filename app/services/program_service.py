@@ -65,6 +65,9 @@ SETTING_DEFAULTS = {
     # to security_alert_email (empty = ADMIN_EMAIL).
     "security_alert_points": "1000",
     "security_alert_email": "",
+    # "1": members check themselves in with the event QR. "0": only staff can check members in,
+    # so nobody can claim event points without attending.
+    "event_self_checkin": "1",
 }
 
 # Points that count towards "lifetime earned": everything except redemptions and their refunds.

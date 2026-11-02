@@ -173,6 +173,9 @@ def scan_attendance(id: str, current_user: dict = Depends(get_current_user)):
     import datetime as _dt
     if not event.get("is_active", True):
         raise HTTPException(status_code=400, detail="This event is not open for check-in.")
+    from app.services.program_service import get_setting
+    if get_setting("event_self_checkin") == "0":
+        raise HTTPException(status_code=403, detail="Please see a staff member at the event to check in.")
     try:
         event_start = _dt.datetime.fromisoformat(str(event["event_date"]).replace("Z", "+00:00"))
         if event_start.tzinfo is None:

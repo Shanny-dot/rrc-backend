@@ -46,6 +46,33 @@ def test_invitation_emails_are_capped_per_member(env):
         send_limits.reset_all()
 
 
+def test_staff_only_event_check_in(env):
+    import datetime
+    db, c = env["db"], env["c"]
+    start = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).isoformat()
+    event = {"title": "Staff check-in", "event_date": start, "is_active": True, "points_for_attending": 40}
+    made = c.post("/api/v1/admin/events", headers=env["admin"], json=event)
+    assert made.status_code == 200
+    event_id = made.json()["id"]
+    assert c.post(f"/api/v1/events/{event_id}/rsvp", headers=env["member"], json={}).status_code == 200
+    db.tables["app_content"].append({"key": "event_self_checkin", "value": "0"})
+    try:
+        before = _member(db).get("total_points") or 0
+        r = c.post(f"/api/v1/events/{event_id}/scan-attendance", headers=env["member"])
+        assert r.status_code == 403 and "staff" in r.json()["detail"]
+        assert (_member(db).get("total_points") or 0) == before
+        # Members can't see the list or check themselves in the staff way
+        assert c.get(f"/api/v1/admin/events/{event_id}/attendees", headers=env["member"]).status_code == 403
+        people = c.get(f"/api/v1/admin/events/{event_id}/attendees", headers=env["admin"]).json()
+        mine = next(p for p in people if p["email"] == _member(db)["email"])
+        assert mine["attended"] is False
+        assert c.post("/api/v1/admin/events/scan-qr", headers=env["admin"], json={"qr_token": mine["qr_token"]}).status_code == 200
+        assert (_member(db).get("total_points") or 0) == before + 40
+        assert c.post("/api/v1/admin/events/scan-qr", headers=env["admin"], json={"qr_token": mine["qr_token"]}).status_code == 400
+    finally:
+        db.tables["app_content"][:] = [r for r in db.tables["app_content"] if r["key"] != "event_self_checkin"]
+
+
 def test_job_key_is_checked(env):
     c = env["c"]
     assert c.post("/api/v1/jobs/daily", headers={"X-Job-Key": "wrong"}).status_code == 403

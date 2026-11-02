@@ -377,6 +377,16 @@ def approve_redemption(id: str):
 def reject_redemption(id: str, req: RedemptionRejectRequest):
     return _set_redemption_status(id, "rejected", req.admin_note)
 
+@router.get("/events/{id}/attendees")
+def event_attendees(id: str, admin: dict = Depends(get_current_admin)):
+    """Members booked in to an event, so staff can check them in (uses /events/scan-qr)."""
+    rows = supabase_admin.table("event_rsvps").select("qr_token, attended, attended_at, cancelled, users(full_name, email)") \
+        .eq("event_id", id).execute().data or []
+    return [{"qr_token": r["qr_token"], "attended": r.get("attended"), "attended_at": r.get("attended_at"),
+             "full_name": (r.get("users") or {}).get("full_name"), "email": (r.get("users") or {}).get("email")}
+            for r in rows if not r.get("cancelled")]
+
+
 @router.post("/events/scan-qr")
 def scan_qr(req: QRScanRequest):
     # 1. Find the RSVP row by qr_token

@@ -41,6 +41,7 @@ ROUTES = {
     ("POST", f"{A}/events"): ("events.manage", "Created event"),
     ("PUT", f"{A}/events/{{id}}"): ("events.manage", "Edited event"),
     ("DELETE", f"{A}/events/{{id}}"): ("events.manage", "Deleted event"),
+    ("GET", f"{A}/events/{{id}}/attendees"): ("view", None),
     ("POST", f"{A}/events/scan-qr"): ("events.manage", "Checked in an attendee"),
     ("POST", f"{A}/events/{{id}}/thank-you"): ("events.manage", "Sent event thank-you"),
     ("POST", f"{A}/rewards"): ("rewards.manage", "Created reward"),
