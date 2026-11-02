@@ -20,7 +20,7 @@ sites can't do two-step, so the admin sites and staff set-up must come before th
 |---|---|---|
 | 1 | Run "Nightly backup and restore test" by hand | Run is green; note the backup's name |
 | 2 | Apply `db/migrations/015_staff_roles_audit_log.sql` in the Supabase SQL editor | `audit_log` exists; existing admins have `admin_role = owner` |
-| 3 | Admin: fast-forward `main` to the release branch and push (Vercel deploys) | rrc-admin.vercel.app shows the two-step screen after sign-in; frame and content headers are present |
+| 3 | Admin: nothing to do on Vercel. rrc-admin.vercel.app is the staging / demo copy (admin screens on the test copy; `/join`, `/download` and `/faq` on the live server) and stays that way | Member invite links still open and record on the live server |
 | 4 | Admin: `npm run build`, back up the current cPanel files, upload `dist` | admin.reliiancerewards.com.au does the same |
 | 5 | Each Owner signs in and sets up the authenticator app | Dashboard opens. Pages work as before; Staff and Activity log appear after step 6 |
 | 6 | Server: fast-forward `main` to the release branch and push (Render deploys) | Deploy is live; `/health` and `/health/db` return ok |
@@ -50,7 +50,7 @@ the new admin site, but the new server refuses staff on the old site.
 
 1. **Server:** in Render, roll back to the previous deploy, and clear the Health Check Path first.
    Then `git revert` on `main` or switch off auto-deploy, or the next push will redeploy it.
-2. **Admin:** roll back the Vercel deployment and restore the cPanel backup from step 4.
+2. **Admin:** restore the cPanel backup from step 4.
 3. **Database:** leave update 015 in place. It only adds things, and the old server ignores them.
    Authenticator links can stay too; the old site doesn't use them.
 4. **Data emergency only:** if data is damaged, follow docs/DISASTER_RECOVERY.md scenario D using
