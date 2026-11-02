@@ -380,11 +380,11 @@ def reject_redemption(id: str, req: RedemptionRejectRequest):
 @router.get("/events/{id}/attendees")
 def event_attendees(id: str, admin: dict = Depends(get_current_admin)):
     """Members booked in to an event, so staff can check them in (uses /events/scan-qr)."""
-    rows = supabase_admin.table("event_rsvps").select("qr_token, attended, attended_at, cancelled, users(full_name, email)") \
+    rows = supabase_admin.table("event_rsvps").select("qr_token, attended, attended_at, cancelled, users(full_name, email, deleted_at)") \
         .eq("event_id", id).execute().data or []
     return [{"qr_token": r["qr_token"], "attended": r.get("attended"), "attended_at": r.get("attended_at"),
              "full_name": (r.get("users") or {}).get("full_name"), "email": (r.get("users") or {}).get("email")}
-            for r in rows if not r.get("cancelled")]
+            for r in rows if not r.get("cancelled") and not (r.get("users") or {}).get("deleted_at")]
 
 
 @router.post("/events/scan-qr")
